@@ -1,0 +1,46 @@
+# Curated intervention library for vLLM decode workloads.
+#
+# Every entry has applicability, expected delta range with cited source, and
+# a safety gate. I2 curates entries in W2 (GITM-031..033); every entry must
+# be reviewed by Adit before commit.
+#
+# The W1 skeleton ships with two example entries so the end-to-end pipeline
+# has something to load.
+
+interventions:
+  - name: kv_cache_block_size_16
+    summary: >
+      Set vLLM PagedAttention block size to 16 for short-context decode.
+    knob: block_size
+    applies_to_kernels: [paged_attention, attn_score_value]
+    expected_delta_mean: 0.05
+    expected_delta_lo: 0.02
+    expected_delta_hi: 0.10
+    source: https://docs.vllm.ai/en/latest/configuration/optimization.html
+    applicability:
+      workloads: [vllm-decode]
+      requires_dtype: [fp16, bf16]
+      max_kv_cache_len: 4096
+    safety:
+      tier: low_risk
+      requires_rollback_window_s: 60
+      notes: Reversible at warm start; no persisted state.
+    review: null
+
+  - name: gpu_memory_utilization_092
+    summary: >
+      Raise gpu_memory_utilization to 0.92 to permit larger batch slots.
+    knob: gpu_memory_utilization
+    applies_to_kernels: []
+    expected_delta_mean: 0.04
+    expected_delta_lo: 0.01
+    expected_delta_hi: 0.08
+    source: https://docs.vllm.ai/en/latest/configuration/optimization.html
+    applicability:
+      workloads: [vllm-decode]
+    safety:
+      tier: moderate
+      forbid_if_oom_history: true
+      requires_rollback_window_s: 120
+      notes: Watch for OOM during long-running decode; rollback to 0.85 on first OOM.
+    review: null

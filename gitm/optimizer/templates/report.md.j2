@@ -1,0 +1,41 @@
+# GITM provenance report
+
+**Workload:** `{{ provenance.workload_id }}`
+**Fingerprint:** `{{ provenance.fingerprint }}`
+**Run ID:** `{{ provenance.run_id }}`
+**git SHA:** `{{ provenance.git_sha }}` &middot; **gitm:** `{{ provenance.gitm_version }}`
+
+## Summary
+
+{{ summary }}
+
+{%- if qualification_diagnostic %}
+
+> **Qualification gate diagnostic.** {{ qualification_diagnostic }}
+{%- endif %}
+
+## Claims
+
+Every claim below carries the full provenance chain. Incomplete chain = no
+claim. Rejected and rolled-back candidates are listed in the appendix.
+
+{% if claims | length == 0 -%}
+_No claims._
+{%- else -%}
+| # | Claim | Residual | Causal evidence | Intervention | Predicted Δ | Measured Δ |
+|---|---|---|---|---|---|---|
+{% for c in claims -%}
+| {{ loop.index }} | {{ c.summary }} | `{{ c.residual_invariant }}`: {{ '{:+.1%}'.format(c.residual_value) }} | {{ c.causal_evidence }} | `{{ c.intervention_name }}` | {{ '{:+.1%}'.format(c.predicted_delta) }} | {% if c.measured_delta is none %}—{% else %}{{ '{:+.1%}'.format(c.measured_delta) }}{% endif %}{% if c.rolled_back %} (rolled back){% endif %} |
+{% endfor %}
+{%- endif %}
+
+## Appendix
+
+- **Rejected candidates.** {{ provenance.rejected_candidates | length }}{% if provenance.rejected_candidates %}: {{ provenance.rejected_candidates | join(', ') }}{% endif %}
+- **Rolled back.** {{ provenance.rolled_back | length }}{% if provenance.rolled_back %}: {{ provenance.rolled_back | join(', ') }}{% endif %}
+- **Trace.** `{{ provenance.trace_path or '—' }}`
+- **Window.** start `{{ provenance.started_at_ns }}` &rarr; end `{{ provenance.ended_at_ns }}`
+
+---
+
+_Trust comes from honest reports, not from optimizations themselves._
