@@ -20,6 +20,10 @@ dependencies = [
 
 [project.optional-dependencies]
 nvidia = ["pynvml>=11.5"]
+# Benchmark layer: HFT Parquet generator (pyarrow) + the LOB harness CPU
+# fallback (pandas). On a GPU box the harness runs on cuDF/CuPy instead — those
+# install from the RAPIDS channel, not PyPI, so they are not listed here.
+bench = ["pyarrow>=15", "pandas>=2.0"]
 prometheus = ["prometheus-client>=0.20"]
 otlp = ["opentelemetry-sdk>=1.25", "opentelemetry-exporter-otlp>=1.25"]
 s3 = ["boto3>=1.34"]
@@ -28,6 +32,7 @@ dev = [
     "pytest-cov>=4.1",
     "ruff>=0.4",
     "mypy>=1.10",
+    "build>=1.0",  # `python -m build` for the wheel-build verification check
 ]
 
 [project.scripts]
@@ -38,6 +43,8 @@ packages = ["gitm"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "gitm/optimizer/templates/report.md.j2" = "gitm/optimizer/templates/report.md.j2"
+"gitm/bench/templates/results.md.j2" = "gitm/bench/templates/results.md.j2"
+"gitm/tracer/_cupti/cupti_shim.c" = "gitm/tracer/_cupti/cupti_shim.c"
 "gitm/kernels/library.yaml" = "gitm/kernels/library.yaml"
 
 [tool.pytest.ini_options]

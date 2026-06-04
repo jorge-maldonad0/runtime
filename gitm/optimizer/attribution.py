@@ -9,6 +9,7 @@ Doubly-robust estimator lands alongside Granger in W2 (GITM-008).
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 
 import numpy as np
@@ -50,7 +51,9 @@ def attribute(
       → if not, drop or escalate
     """
     try:
-        from statsmodels.tsa.stattools import grangercausalitytests  # type: ignore[import-not-found]
+        from statsmodels.tsa.stattools import (
+            grangercausalitytests,  # type: ignore[import-not-found]
+        )
     except Exception:
         return RankedHypotheses(hypotheses=[])
 
@@ -71,7 +74,9 @@ def attribute(
                 continue
             arr = np.column_stack([np.asarray(series[effect][:n]), np.asarray(series[cause][:n])])
             try:
-                result = grangercausalitytests(arr, maxlag=max_lag, verbose=False)
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")  # deprecated-arg + convergence chatter
+                    result = grangercausalitytests(arr, maxlag=max_lag, verbose=False)
                 pvals = [result[lag][0]["ssr_ftest"][1] for lag in range(1, max_lag + 1)]
                 p = float(min(pvals))
             except Exception:

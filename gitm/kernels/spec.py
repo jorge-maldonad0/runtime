@@ -6,7 +6,6 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-
 SafetyTier = Literal["low_risk", "moderate", "high_risk"]
 
 
@@ -41,6 +40,7 @@ class InterventionSpec(BaseModel):
     name: str
     summary: str
     knob: str  # vLLM config key, e.g. "max_num_batched_tokens"
+    value: int | float | str | bool | None = None  # value to set the knob to on apply
     applies_to_kernels: list[str] = Field(default_factory=list)  # substring match
     expected_delta_mean: float  # signed, e.g. +0.08 = 8% improvement
     expected_delta_lo: float

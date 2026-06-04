@@ -24,7 +24,11 @@ def _parser() -> argparse.ArgumentParser:
         default="15%",
         help="Target improvement fraction (15%% or 0.15).",
     )
-    run.add_argument("--data-root", default=None, help="Override $GITM_DATA_ROOT.")
+    run.add_argument(
+        "--scratch",
+        default=None,
+        help="Override $GITM_SCRATCH (local ephemeral run dir; datasets stay in S3).",
+    )
     run.add_argument("--report", type=Path, default=None, help="Write report markdown here.")
 
     replay = sub.add_parser("replay", help="Counterfactual replay of an intervention on a trace.")
@@ -33,8 +37,20 @@ def _parser() -> argparse.ArgumentParser:
 
     apply_cmd = sub.add_parser("apply", help="Apply an intervention spec to the live workload.")
     apply_cmd.add_argument("--intervention", type=Path, required=True)
+    apply_cmd.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="Target config file to mutate (snapshot+rollback-gated).",
+    )
+    apply_cmd.add_argument(
+        "--min-keep-delta",
+        type=float,
+        default=0.0,
+        help="Roll back if the measured delta is below this fraction.",
+    )
 
-    sub.add_parser("doctor", help="Probe environment, GPUs, and data root layout.")
+    sub.add_parser("doctor", help="Probe environment, GPUs, and data locations.")
 
     return p
 
@@ -66,7 +82,7 @@ def main(argv: list[str] | None = None) -> int:
             workload=args.workload,
             budget=args.budget,
             target=_parse_target(args.target),
-            data_root=args.data_root,
+            scratch=args.scratch,
         )
         if args.report is not None:
             args.report.write_text(result.get("report_md", ""))
@@ -84,7 +100,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "apply":
         from gitm.optimizer.apply import apply_intervention_from_file
 
-        result = apply_intervention_from_file(args.intervention)
+        result = apply_intervention_from_file(
+            args.intervention, config=args.config, min_keep_delta=args.min_keep_delta
+        )
         print(json.dumps(result, indent=2))
         return 0
 
