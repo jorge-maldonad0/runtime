@@ -11,7 +11,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import numpy as np
+
 from gitm.optimizer.invariants import INVARIANTS, Invariant, Violation
+from gitm.optimizer.multibasis import confirmed_positions
 from gitm.planner.graph import Graph
 from gitm.tracer.schema import KernelEvent, Trace
 
@@ -59,39 +62,77 @@ def residuals(trace: Trace, graph: Graph) -> Residuals:
 
         res.per_kernel.append(KernelResidual(op=pn.op, layer=pn.layer, r_kt=r_kt, r_mt=r_mt))
 
-    # Stream concurrency: count predicted-concurrent kernels that actually
-    # ran on the same stream (= serialized).
-    by_stream: dict[int, list[KernelEvent]] = {}
-    for k in obs:
-        by_stream.setdefault(k.stream_id, []).append(k)
-    expected_concurrent = sum(
-        1 for n_ in pred if isinstance(n_, type(pred[0])) and n_.expected_stream_id != 0
-    )
-    res.serialized_concurrency_fraction = 0.0 if expected_concurrent == 0 else 0.0
-
+    res.serialized_concurrency_fraction = _serialized_fraction(obs)
     return res
 
 
+def _serialized_fraction(obs: list[KernelEvent]) -> float:
+    """Fraction of adjacent kernel pairs that executed serialized.
+
+    Sort observed kernels by start time; a consecutive pair is *serialized* when
+    the later kernel starts after the earlier one ends (no temporal overlap)
+    while sharing a stream — concurrency a well-tuned pipeline would have
+    achieved was lost. 0.0 = fully overlapped, 1.0 = fully sequential. Computed
+    from the real trace (stream IDs + ns timestamps), not assumed.
+    """
+    if len(obs) < 2:
+        return 0.0
+    s = sorted(obs, key=lambda k: k.start_ns)
+    pairs = serialized = 0
+    for a, b in zip(s, s[1:], strict=False):
+        pairs += 1
+        overlapped = b.start_ns < a.end_ns
+        if not overlapped and a.stream_id == b.stream_id:
+            serialized += 1
+    return serialized / pairs if pairs else 0.0
+
+
 def check_invariants(
-    residuals_: Residuals, invariants: tuple[Invariant, ...] = INVARIANTS
+    residuals_: Residuals,
+    invariants: tuple[Invariant, ...] = INVARIANTS,
+    *,
+    multi_basis: bool = True,
 ) -> list[Violation]:
-    """Emit a Violation for each kernel whose residual exceeds its band."""
+    """Emit a Violation per out-of-band residual.
+
+    With ``multi_basis`` (default), a *kernel-time* deviation is reported only
+    when it is confirmed in 2+ bases (a transient anomaly — see
+    :mod:`gitm.optimizer.multibasis`) or systematic for its op (median residual
+    over band). This suppresses single-basis noise without dropping systematic
+    shifts. Memory-traffic and stream-concurrency use the direct band check.
+    """
     out: list[Violation] = []
     inv_kt = next((i for i in invariants if i.id == "kernel_time"), None)
     inv_mt = next((i for i in invariants if i.id == "memory_traffic"), None)
     inv_sc = next((i for i in invariants if i.id == "stream_concurrency"), None)
 
+    # Kernel-time confirmed-anomaly set: multi-basis transient ∪ systematic shift.
+    confirmed: set[tuple[str, int]] | None = None
+    if multi_basis and inv_kt is not None:
+        series_by_op: dict[str, list[float]] = {}
+        for kr in residuals_.per_kernel:
+            series_by_op.setdefault(kr.op, []).append(kr.r_kt)
+        confirmed = confirmed_positions(series_by_op)
+        for op, vals in series_by_op.items():
+            if abs(float(np.median(vals))) > inv_kt.band_width:  # systematic
+                confirmed.update((op, i) for i, v in enumerate(vals) if abs(v) > inv_kt.band_width)
+
+    op_idx: dict[str, int] = {}
     for kr in residuals_.per_kernel:
+        i = op_idx.get(kr.op, 0)
+        op_idx[kr.op] = i + 1
+
         if inv_kt is not None and abs(kr.r_kt) > inv_kt.band_width:
-            out.append(
-                Violation(
-                    invariant="kernel_time",
-                    node_op=kr.op,
-                    layer=kr.layer,
-                    residual=kr.r_kt,
-                    severity=min(abs(kr.r_kt) / inv_kt.band_width, 1.0),
+            if confirmed is None or (kr.op, i) in confirmed:
+                out.append(
+                    Violation(
+                        invariant="kernel_time",
+                        node_op=kr.op,
+                        layer=kr.layer,
+                        residual=kr.r_kt,
+                        severity=min(abs(kr.r_kt) / inv_kt.band_width, 1.0),
+                    )
                 )
-            )
         if (
             inv_mt is not None
             and kr.r_mt is not None

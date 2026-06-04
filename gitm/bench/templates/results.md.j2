@@ -1,0 +1,37 @@
+# {{ s.benchmark }} — baseline results
+
+**Recorded {{ s.metric }}:** {{ "%.4g"|format(s.recorded) }}
+(mean of {{ s.n }} seed(s): {{ s.seeds|join(", ") }})
+
+| Stat | Value |
+| --- | --- |
+| Mean | {{ "%.4g"|format(s.mean) }} |
+| Std dev | {{ "%.4g"|format(s.stddev) }} |
+| Spread (max−min)/mean | {{ pct(s.spread) }} |
+| GPU active (worst run) | {{ pct(s.gpu_active_overall) }} |
+
+## Sign-off gates
+
+| Gate | Result | Detail |
+| --- | --- | --- |
+{% for g in s.gates -%}
+| {{ g.name }} | {{ "✅ pass" if g.passed else "❌ FAIL" }} | {{ g.detail }} |
+{% endfor %}
+**Overall: {{ "✅ SIGNED OFF" if s.passed else "❌ NOT SIGNED OFF" }}**
+
+GPU active % {{ pct(s.gpu_active_overall) }} {{ "<" if s.gpu_active_overall < gpu_active_ceiling else "≥" }} ceiling {{ pct(gpu_active_ceiling) }}{% if s.gpu_active_overall >= gpu_active_ceiling %} — **saturated, swap rule applies**{% endif %}.
+
+## Stall breakdown
+{% if breakdown %}
+| Phase | CPU % | Data-stall % | Sync % | GPU active % | Throughput | Wall-clock |
+| --- | --- | --- | --- | --- | --- | --- |
+{% for p in breakdown -%}
+| {{ p.phase }} | {{ pct(p.cpu) }} | {{ pct(p.data_stall) }} | {{ pct(p.sync) }} | {{ pct(p.gpu_active) }} | {{ "%.4g"|format(p.throughput) if p.throughput is not none else "—" }} | {{ "%.3g"|format(p.wall_clock_s) }} s |
+{% endfor %}
+{% else %}
+_No stall breakdown captured. Run `make profile` and re-render._
+{% endif %}
+{% if manifest_sha256 %}
+---
+Dataset manifest sha256: `{{ manifest_sha256 }}`
+{% endif %}
