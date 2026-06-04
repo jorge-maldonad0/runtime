@@ -16,24 +16,30 @@ optimize(engine, budget="24h", target=0.15)
 
 ## Data layout
 
-GITM never stores datasets, traces, or run artifacts inside the repo. Set
-`GITM_DATA_ROOT` before running anything:
+Two roots — set both before running anything:
 
 ```bash
-export GITM_DATA_ROOT="$HOME/gitm-data"      # dev box
-export GITM_DATA_ROOT="/data/gitm"           # shared GPU box
+export GITM_S3_ROOT="s3://gitm-data/prod"    # canonical store (datasets + archives)
+export GITM_SCRATCH="/mnt/nvme/gitm"         # local ephemeral run dir (defaults to ~/.cache/gitm)
 ```
 
-Layout under `$GITM_DATA_ROOT`:
+Canonical layout under `$GITM_S3_ROOT` (S3):
 
 ```
-datasets/{hft,biotech,edge}/    # benchmark inputs
-runs/                            # baseline + pilot outputs
+datasets/{hft,biotech,edge}/    # benchmark inputs (immutable, sha256-pinned)
+runs/                            # durable baseline + pilot outputs
 traces/                          # captured event-telemetry traces
 telemetry/                       # state-telemetry samples (1Hz GPU state)
 ```
 
-Inside the repo: code, specs, manifests (paths + sha256 + size), templates.
+Local layout under `$GITM_SCRATCH` (ephemeral, synced to S3 after a run):
+
+```
+staging/    # datasets staged in from S3 for the active run, then evicted
+runs/       # this run's outputs (small) before archival
+traces/     # this run's trace before archival
+telemetry/  # this run's samples before archival
+```
 
 ## Architecture
 
@@ -167,13 +173,16 @@ NVIDIA box additionally:
 pip install -e ".[nvidia]"
 ```
 
-Set the data root (datasets, traces, runs all live outside the repo):
+Point at the canonical S3 store and a local scratch dir (see
+[Data layout](#data-layout) — datasets live in S3, never on local disk):
 
 ```bash
-export GITM_DATA_ROOT="$HOME/gitm-data"      # dev box
-export GITM_DATA_ROOT="/data/gitm"           # shared GPU box
-mkdir -p "$GITM_DATA_ROOT"/{datasets,traces,runs,telemetry}
+export GITM_S3_ROOT="s3://gitm-data/prod"    # canonical store
+export GITM_SCRATCH="/mnt/nvme/gitm"         # local scratch (defaults to ~/.cache/gitm)
 ```
+
+`gitm doctor` reports both, plus discovered GPUs. Scratch subdirs are created
+on first run.
 
 ### 2. Smoke test
 
@@ -209,7 +218,7 @@ gitm-labs/runtime, runtime/scheduler/, runtime/tracer/, runtime/optimizer/, runt
 | Code | `gitm/` |
 | Tests | `tests/` |
 | Docs | `docs/` |
-| Datasets, traces, runs | `$GITM_DATA_ROOT/` (outside repo) |
+| Datasets, traces, runs | `$GITM_S3_ROOT/` (S3, canonical) · `$GITM_SCRATCH/` (local, ephemeral) |
 | Intervention library | `gitm/kernels/library.yaml` |
 | Report template | `gitm/optimizer/templates/report.md.j2` |
 | Trace schema | `gitm/tracer/schema.py` (pydantic) |

@@ -1,0 +1,24 @@
+# Pinned dependency versions for reproducible installs.
+#
+#   pip install -e ".[dev,bench]" -c constraints.txt
+#
+# These are the exact versions the test suite is green against (92 passed). The
+# pyproject floors stay as ranges for flexibility; this file freezes them so
+# every install on every box lands the same stack. The Dockerfile installs with
+# this constraint file so the built image is reproducible.
+#
+# GPU compute libs (torch / cudf-cu12 / cupy-cuda12x) are pinned in the
+# Dockerfile instead, because their valid versions are tied to the CUDA base
+# image, not to this CPU stack.
+
+pydantic==2.11.7
+jinja2==3.1.6
+PyYAML==6.0.2
+numpy==2.2.6
+statsmodels==0.14.6
+pyarrow==21.0.0
+pandas==2.3.2
+
+# dev
+pytest==7.4.4
+ruff==0.12.11
