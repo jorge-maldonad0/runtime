@@ -17,7 +17,7 @@ def optimize(
     workload: str | None = None,
     budget: str = "24h",
     target: float = 0.15,
-    data_root: str | None = None,
+    scratch: str | None = None,
 ) -> dict[str, Any]:
     """Run the autonomous 24-hour optimization loop and return a report.
 
@@ -32,6 +32,6 @@ def optimize(
         workload=workload,
         budget=budget,
         target=target,
-        data_root=data_root,
+        scratch=scratch,
     )
     return run_loop(cfg)

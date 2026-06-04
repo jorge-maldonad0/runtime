@@ -14,9 +14,10 @@ from __future__ import annotations
 import json
 import time
 import uuid
+import warnings
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
 
 from gitm.tracer.schema import Trace
 
@@ -51,15 +52,28 @@ def capture(
         duration_ns=0,
     )
 
+    # Enabling collection can fail at runtime (e.g. CUPTI returns
+    # NOT_COMPATIBLE on a driver/CUPTI version skew). Degrade to a well-formed
+    # no-op trace rather than taking down the whole run — the tracer is
+    # best-effort instrumentation, not load-bearing for the workload.
     if backend is not None:
-        backend.start()
+        try:
+            backend.start()
+        except Exception as exc:
+            warnings.warn(f"trace capture disabled: backend.start() failed: {exc}", stacklevel=2)
+            backend = None
+            trace.vendor = "none"
+            trace.device_count = 0
+
     try:
         yield trace
     finally:
         ended_ns = time.time_ns()
         if backend is not None:
-            events = backend.stop()
-            trace.events = events
+            try:
+                trace.events = backend.stop()
+            except Exception as exc:
+                warnings.warn(f"trace capture incomplete: backend.stop() failed: {exc}", stacklevel=2)
         trace.duration_ns = ended_ns - started_ns
         _write_jsonl(out_path, trace)
 
@@ -78,8 +92,11 @@ def _write_jsonl(path: Path, trace: Trace) -> None:
 def _backend():
     """Return the active CUPTI/rocprof backend, or ``None`` if unavailable.
 
-    Implementation pending: returning ``None`` makes capture a well-formed
-    no-op so the rest of the pipeline can be developed without a GPU.
+    Tries the CUPTI backend (real, via the compiled shim — see
+    :mod:`gitm.tracer.cupti`). When the shim isn't built (CPU-only host, or a
+    GPU box where ``python -m gitm.tracer._cupti.build`` hasn't run),
+    construction raises and we return ``None`` so capture is a well-formed
+    no-op and the rest of the pipeline runs without a GPU.
     """
     try:
         from gitm.tracer.cupti import CuptiBackend  # noqa: F401

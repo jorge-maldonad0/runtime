@@ -90,7 +90,7 @@ def test_report_renders_with_zero_claims():
 
 def test_run_loop_end_to_end(tmp_path: Path, monkeypatch):
     """Embedded ``optimize()`` runs end-to-end without a GPU."""
-    monkeypatch.setenv("GITM_DATA_ROOT", str(tmp_path))
+    monkeypatch.setenv("GITM_SCRATCH", str(tmp_path))
 
     from gitm import optimize
 

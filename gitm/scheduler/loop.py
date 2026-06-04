@@ -2,7 +2,8 @@
 
 This is the orchestration glue — it composes tracer, planner, optimizer,
 kernels, and agents in the 5 phases below. Each phase writes its artifact
-under ``$GITM_DATA_ROOT/runs/<run_id>/`` so a partial run is still useful.
+to local scratch under ``<scratch>/runs/<run_id>/`` (see ``gitm._paths``) so a
+partial run is still useful; the durable copy is synced to S3 afterwards.
 """
 
 from __future__ import annotations
@@ -12,20 +13,19 @@ import re
 import time
 import uuid
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
-from gitm._paths import data_root, traces_dir
+from gitm._paths import runs_dir, traces_dir
 from gitm.agents.policy import Policy, select_interventions
 from gitm.kernels.library import load_library
-from gitm.optimizer.apply import apply_intervention
+from gitm.optimizer.apply import DryRunApplicator, apply_intervention
 from gitm.optimizer.attribution import attribute
+from gitm.optimizer.dr import attribute_dr
 from gitm.optimizer.monitor import check_invariants, residuals
 from gitm.optimizer.qualification import qualify
 from gitm.optimizer.report import Claim, build_provenance, write_report
 from gitm.planner.graph import predict_graph
 from gitm.tracer.capture import capture
-
 
 _BUDGET_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([smhd])\s*$")
 
@@ -44,7 +44,7 @@ class LoopConfig:
     workload: str | None = None
     budget: str = "24h"
     target: float = 0.15
-    data_root: str | None = None
+    scratch: str | None = None
     top_n_interventions: int = 5
 
 
@@ -55,10 +55,9 @@ def run_loop(cfg: LoopConfig) -> dict[str, Any]:
     budget_s = _parse_budget_s(cfg.budget)
     started_ns = time.time_ns()
 
-    root = data_root(cfg.data_root)
-    run_dir = root / "runs" / run_id
+    run_dir = runs_dir(cfg.scratch) / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
-    trace_path = traces_dir(cfg.data_root) / f"{run_id}.jsonl"
+    trace_path = traces_dir(cfg.scratch) / f"{run_id}.jsonl"
 
     # Phase 1 — capture, fingerprint, predict graph
     with capture(trace_path, workload_id=workload, run_id=run_id) as trace:
@@ -86,16 +85,39 @@ def run_loop(cfg: LoopConfig) -> dict[str, Any]:
 
     # Phase 2 — residuals + attribution
     res = residuals(trace, graph)
-    violations = check_invariants(res)
-    hypotheses = attribute(res, graph)
+    violations = check_invariants(res)  # multi-basis confirmed (GITM-008)
+    hypotheses = attribute(res, graph)  # Granger
+    dr_hypotheses = attribute_dr(res, graph)  # doubly-robust, corroborating (GITM-008)
+
+    (run_dir / "violations.json").write_text(
+        json.dumps(
+            [
+                {
+                    "invariant": v.invariant,
+                    "node_op": v.node_op,
+                    "layer": v.layer,
+                    "residual": v.residual,
+                    "severity": v.severity,
+                }
+                for v in violations
+            ],
+            indent=2,
+        )
+    )
     (run_dir / "residuals.json").write_text(
         json.dumps(
             {
                 "n_kernel_residuals": len(res.per_kernel),
                 "n_violations": len(violations),
-                "top_hypotheses": [
+                "serialized_concurrency_fraction": res.serialized_concurrency_fraction,
+                "top_hypotheses_granger": [
                     {"cause": h.cause_op, "effect": h.effect_op, "p_value": h.p_value}
                     for h in hypotheses.top(5)
+                ],
+                "top_hypotheses_doubly_robust": [
+                    {"cause": h.cause_op, "effect": h.effect_op, "p_value": h.p_value,
+                     "notes": h.notes}
+                    for h in dr_hypotheses.top(5)
                 ],
             },
             indent=2,
@@ -128,7 +150,9 @@ def run_loop(cfg: LoopConfig) -> dict[str, Any]:
         if c.rejected_reason is not None:
             rejected.append(f"{c.spec.name} ({c.rejected_reason})")
             continue
-        result = apply_intervention(c.spec)
+        # W1 skeleton: no live engine attached -> predict-only, unverified claims.
+        # A live run passes an engine applicator here (GITM-020).
+        result = apply_intervention(c.spec, DryRunApplicator())
         if result.rolled_back:
             rolled_back.append(c.spec.name)
         claims.append(

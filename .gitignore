@@ -8,7 +8,7 @@
 /data/
 
 # Python
-/__pycache__/
+__pycache__/
 *.py[cod]
 *$py.class
 *.egg-info/
@@ -33,7 +33,4 @@ htmlcov/
 .idea/
 *.swp
 .DS_Store
-
-
 .claude
-venv
