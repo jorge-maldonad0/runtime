@@ -150,9 +150,9 @@ def main(argv: list[str] | None = None) -> int:
     tele = None
     try:
         from gitm.telemetry import Collector, CollectorConfig
-        from gitm.telemetry.sinks import JsonlSink
+        from gitm.telemetry.sinks import build_sink
 
-        tele = Collector(CollectorConfig(interval_s=0.25, sinks=[JsonlSink(str(tele_path))]))
+        tele = Collector(CollectorConfig(interval_s=0.25, sinks=[build_sink(f"jsonl:{tele_path}")]))
     except Exception as exc:
         print(f"telemetry disabled (best-effort): {exc}")
 
