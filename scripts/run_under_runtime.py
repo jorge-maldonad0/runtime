@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import time
 from pathlib import Path
 
@@ -35,6 +36,25 @@ def _sync():
         cupy.cuda.runtime.deviceSynchronize()
     except Exception:
         pass
+
+
+# Mangled CUDA kernel names → a small set of stable "families" so the residual
+# series feeding Granger are well-populated (a variable = a kernel *type*, not
+# every template instantiation). Noise tokens are dropped; the first distinctive
+# identifier after the library prefix names the family.
+_NOISE = {
+    "detail", "kernel", "void", "const", "unsigned", "int", "long", "float",
+    "double", "global", "device", "functor", "impl", "internal", "type",
+    "types", "common", "native", "operator", "policy", "dispatch", "agent",
+}
+
+
+def _kernel_family(name: str) -> str:
+    lib = ("cub" if "cub" in name else "cudf" if "cudf" in name
+           else "thrust" if "thrust" in name else "k")
+    toks = [t for t in re.findall(r"[a-z][a-z_]{3,}", name) if t not in _NOISE]
+    fn = toks[0] if toks else "anon"
+    return f"{lib}.{fn}"
 
 
 def _load_hft(stage: Path, seed: int, max_events: int | None):
@@ -218,12 +238,32 @@ def main(argv: list[str] | None = None) -> int:
             f"violations multi-basis={len(v_mb)} raw={len(v_raw)} "
             f"(filter dropped {len(v_raw) - len(v_mb)})"
         )
-        graph = predict_graph()
-        ranked = attribute(res, graph)
-        top_hyps = ranked.top(3)
+        # Attribution: group kernels into families (see _kernel_family) and keep
+        # only families with enough samples, so Granger's per-op residual series
+        # are well-formed. attribute() truncates all series to the shortest, so a
+        # sparse op would otherwise collapse every pair to too few points.
+        from collections import Counter
+
+        fam_of = {nm: _kernel_family(nm) for nm in by_name}
+        fam_counts = Counter(fam_of[k.name] for k in kernels)
+        MIN_ATTR = 16
+        res_attr = Residuals()
+        res_attr.serialized_concurrency_fraction = sc
+        for k in kernels:
+            fam = fam_of[k.name]
+            if fam_counts[fam] < MIN_ATTR:
+                continue
+            m = med[k.name] or 1.0
+            res_attr.per_kernel.append(
+                KernelResidual(op=fam, layer=None, r_kt=((k.end_ns - k.start_ns) - m) / m, r_mt=None)
+            )
+        fams = sorted({kr.op for kr in res_attr.per_kernel})
+        print(f"attribution families (>= {MIN_ATTR} samples): {fams}")
+        ranked = attribute(res_attr, predict_graph())
+        top_hyps = ranked.top(5)
         print(
             "top Granger hypotheses:",
-            [(h.cause_op[:22], h.effect_op[:22], round(h.p_value, 4)) for h in top_hyps] or "none",
+            [(h.cause_op, h.effect_op, round(h.p_value, 4)) for h in top_hyps] or "none",
         )
 
     measure["serialized_concurrency_fraction"] = sc
