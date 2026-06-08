@@ -106,7 +106,25 @@ class WorkUnit:
                 "  # Ask Adit for the checkpoint URL or pull from S3"
             ) from exc
 
-        cfg_from_yaml_file(str(cfg_path), cfg)
+        # OpenPCDet resolves _BASE_CONFIG_ entries (e.g.
+        # cfgs/dataset_configs/kitti_dataset.yaml) relative to the current
+        # working directory, which is the tools/ dir holding the top-level
+        # cfgs/ folder. Temporarily chdir there so config loading works no
+        # matter where the caller runs from, then restore the CWD.
+        import os
+
+        cfg_path = Path(cfg_path)
+        parts = cfg_path.resolve().parts
+        if "cfgs" in parts:
+            tools_dir = Path(*parts[: parts.index("cfgs")])
+        else:
+            tools_dir = cfg_path.resolve().parent
+        prev_cwd = os.getcwd()
+        try:
+            os.chdir(tools_dir)
+            cfg_from_yaml_file(str(cfg_path.resolve()), cfg)
+        finally:
+            os.chdir(prev_cwd)
 
         # Minimal dataset wrapper for single-frame inference.
         # DatasetTemplate.prepare_data handles the voxelization pipeline;
