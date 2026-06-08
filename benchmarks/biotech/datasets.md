@@ -8,8 +8,8 @@ UniRef30/BFD DBs (~2.2 TB NVMe), so they run on the staging box. `make smoke`
 synthesizes a tiny local dataset to drive the freeze/verify/reproduce loop.
 
 ## Sources
-- **CASP14 targets** — 110 sequences (`fetch.py fetch_casp`, pinned URL).
-- **CASP15 targets** — 94 sequences (`fetch.py fetch_casp`, pinned URL).
+- **CASP14 targets** — 110 sequences (`fetch.py fetch_casp`, Source: `https://predictioncenter.org/download_area/CASP14/sequences/casp14.seq.txt`).
+- **CASP15 targets** — 94 sequences (`fetch.py fetch_casp`, Source: `https://predictioncenter.org/download_area/CASP15/sequences/casp15.seq.txt`).
 - **UniProt subset** — filtered to lengths 50–512 aa, 50 000 sequences.
 - **Combined FASTA:** `proteins_50k.fasta`, reproducible from one `mmseqs2 filter`
   command. <!-- TODO: paste the pinned mmseqs2 command into fetch.filter_uniprot. -->

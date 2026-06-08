@@ -83,6 +83,10 @@ def length_histogram(records: list[FastaRecord], *, bin_width: int = 50) -> dict
 # --- real acquisition (staging box) -----------------------------------------
 
 
+def clean_casp_header(raw_header: str) -> str:
+    """Normalize CASP sequence headers to only target ID"""
+    return raw_header.split()[0].rstrip('|')
+
 def fetch_casp(out_dir: str | Path) -> list[Path]:
     """Download CASP14 + CASP15 target sequence files."""
     import urllib.request
@@ -92,7 +96,10 @@ def fetch_casp(out_dir: str | Path) -> list[Path]:
     written = []
     for name, url in CASP_SOURCES.items():
         dest = out_dir / f"{name}.fasta"
-        urllib.request.urlretrieve(url, dest)  # noqa: S310 - pinned source
+        raw, _ = urllib.request.urlretrieve(url)
+        raw_records = read_fasta(raw)
+        cleaned = [FastaRecord(clean_casp_header(r.header), r.seq) for r in raw_records]
+        write_fasta(cleaned, dest)
         written.append(dest)
     return written
 
