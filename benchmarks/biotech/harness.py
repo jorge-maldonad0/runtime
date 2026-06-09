@@ -44,20 +44,79 @@ class Runner(Protocol):
 def load_openfold_runner(seed: int, *, recycles: int = RECYCLES):
     """Build the real OpenFold runner (pinned commit + weights). GPU-only."""
     try:
-        import openfold  # noqa: F401
-        import torch  # noqa: F401
+        import torch # type:ignore
+        import openfold # type:ignore
+        import numpy as np
+        from openfold.config import model_config # type:ignore
+        from openfold.model.model import AlphaFold # type:ignore 
+        from openfold.data import feature_pipeline, data_pipeline # type:ignore
+        from openfold.utils.seed import seed_everything # type:ignore
     except Exception as exc:  # pragma: no cover - framework absent on laptop
         raise RuntimeError(
             "OpenFold/torch not importable — the biotech harness runs on a GPU "
             "box with OpenFold v1.0.1 installed. (The dataset + reproducibility "
             "loop is exercised via the CPU smoke harness instead.)"
         ) from exc
+    seed_everything(seed)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    config = model_config(
+        "model_1",
+        train=False,
+        low_prec=False,
+    )
+    config.globals.chunk_size = None
+    config.model.structure_module.no_recycles = recycles
+
+    model = AlphaFold(config)
+    model = model.eval().to(device)
+
+    weights_path = Path(os.environ.get("OPENFOLD_WEIGHTS", "/workspace/openfold_weights/params_model_1.npz"))
+    if not weights_path.exists():
+        raise FileNotFoundError(
+            f"OpenFold weights not found at {weights_path}. "
+            "Set OPENFOLD_WEIGHTS env var or download weights to /workspace/openfold_weights/."
+        )
+    weights = np.load(str(weights_path))
+    state_dict = {k: torch.tensor(v) for k, v in weights.items()}
+    model.load_state_dict(state_dict, strict=False)
+
+    feat_pipeline = feature_pipeline.FeaturePipeline(config.data)
+    data_proc = data_pipeline.DataPipeline(template_featurizer=None)
+
+    class OpenFoldRunner:
+        name = f"openfold-{OPENFOLD_COMMIT}"
+
+        def predict(self, record: FastaRecord, msa_path: Path | None) -> dict:
+            with torch.no_grad():
+                raw_features = data_proc.process_fasta(
+                    fasta_path=None,
+                    alignment_dir=str(msa_path.parent) if msa_path else None,
+                    seqemb_mode=False,
+                    sequence=record.seq,
+                )
+                featurized = feat_pipeline.process_features(
+                    raw_features,
+                    mode="predict",
+                )
+                batch = {
+                    k: torch.tensor(v).unsqueeze(0).to(device)
+                    for k, v in featurized.items()
+                }
+                out = model(batch)
+                plddt = out["plddt"].mean().item() * 100.0
+            return {"plddt": plddt}
+
+    return OpenFoldRunner()
+
+"""
     # pragma: no cover below — exercised only on the GPU box.
     raise NotImplementedError(  # pragma: no cover
         "Wire OpenFold model construction here: load the pinned weights, set "
         f"recycles={recycles}, single model, seed={seed}, and return a Runner "
         "whose predict() featurizes the MSA and runs inference, returning plDDT."
     )
+"""
 
 
 def _msa_path(stage: Path, record: FastaRecord) -> Path | None:
@@ -101,8 +160,7 @@ def run(stage: Path, seed: int, *, warm: int, max_len: int, runner: Runner) -> d
 
 def _device_info() -> tuple[str, int]:
     try:
-        import torch
-
+        import torch # type:ignore
         if torch.cuda.is_available():
             return torch.cuda.get_device_name(0), torch.cuda.device_count()
     except Exception:
