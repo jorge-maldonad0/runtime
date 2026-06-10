@@ -3,7 +3,7 @@ requires = ["hatchling>=1.18"]
 build-backend = "hatchling.build"
 
 [project]
-name = "gitm"
+name = "gitm-labs"
 version = "0.0.1"
 description = "Behavioral compiler and intervention runtime for vLLM decode workloads."
 readme = "README.md"
