@@ -62,7 +62,7 @@ class KernelROI:
     floor_ns: float
     recoverable_ns: float 
     share: float # total_ns / all kernel time
-    recoverable_shares: float # recoverable_ns / all kernel time
+    recoverable_share: float # recoverable_ns / all kernel time
 
 
 def kernel_roi(name_durations, floor_pct: float = 10.0) -> list[KernelROI]:
