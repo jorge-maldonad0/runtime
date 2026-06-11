@@ -8,7 +8,7 @@ and the provenance report writer.
 from __future__ import annotations
 
 from gitm.optimizer.attribution import RankedHypotheses, attribute
-from gitm.optimizer.headroom import (
+from gitm.optimizer.headroom_kernel_rank import (
     GpuHeadroom,
     KernelROI,
     gpu_headroom,
