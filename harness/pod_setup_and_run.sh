@@ -15,21 +15,29 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 GITM_DATA_ROOT="${GITM_DATA_ROOT:-/workspace/edge}"
-OPENPCDET_DIR="${OPENPCDET_DIR:-/workspace/edge/OpenPCDet}"
+OPENPCDET_DIR="${OPENPCDET_DIR:-${GITM_DATA_ROOT}/OpenPCDet}"
 CKPT_DIR="${CKPT_DIR:-$GITM_DATA_ROOT/checkpoints/kitti}"
 CKPT_PATH="$CKPT_DIR/pointpillar_7728.pth"
 CKPT_URL="${CKPT_URL:-}"
 
 CFG_PATH="$OPENPCDET_DIR/tools/cfgs/kitti_models/pointpillar.yaml"
-KITTI_VELODYNE="$GITM_DATA_ROOT/kitti/training/velodyne"
+# Accept either $GITM_DATA_ROOT/kitti/training or $GITM_DATA_ROOT/data/kitti/training
+if [ -d "$GITM_DATA_ROOT/kitti/training/velodyne" ]; then
+  KITTI_TRAINING="$GITM_DATA_ROOT/kitti/training"
+elif [ -d "$GITM_DATA_ROOT/data/kitti/training/velodyne" ]; then
+  KITTI_TRAINING="$GITM_DATA_ROOT/data/kitti/training"
+else
+  KITTI_TRAINING="$GITM_DATA_ROOT/kitti/training"
+fi
+KITTI_VELODYNE="$KITTI_TRAINING/velodyne"
 EXPECTED_FRAMES=7481
 EXPECTED_CKPT_SHA="4c83fc0fa02575b9b3e9dec676f698e7a70bb5a795e89f91df8a96b916fa19e2"
 
 step() { echo ""; echo "==> $*"; }
 
-# ── 1. Verify KITTI data ────────────────────────────────────────────────────
+# ── 1. Verify KITTI data ─────────────────────────────────────────────────────
 
-step "Checking KITTI data at $KITTI_VELODYNE …"
+step "Checking KITTI data at $KITTI_VELODYNE ..."
 if [ ! -d "$KITTI_VELODYNE" ]; then
   echo "ERROR: KITTI velodyne dir not found: $KITTI_VELODYNE" >&2
   echo "  Run first: python $REPO_ROOT/benchmarks/edge/fetch.py --step kitti --out $GITM_DATA_ROOT" >&2
@@ -40,94 +48,122 @@ if [ "$n_bins" -lt "$EXPECTED_FRAMES" ]; then
   echo "ERROR: only $n_bins .bin files found (expected $EXPECTED_FRAMES). Download still running?" >&2
   exit 1
 fi
-echo "  KITTI: $n_bins frames found OK"
+echo "  KITTI: $n_bins frames found OK at $KITTI_VELODYNE"
 
-# ── 2. Clone + install OpenPCDet (pinned commit) ────────────────────────────
+# ── 2. Clone + install OpenPCDet (pinned commit) ─────────────────────────────
 
 PINNED_COMMIT="233f849829b6ac19afb8af8837a0246890908755"
 
-step "Setting up OpenPCDet …"
+step "Setting up OpenPCDet ..."
 if [ ! -d "$OPENPCDET_DIR/.git" ]; then
-  echo "  Cloning OpenPCDet …"
+  echo "  Cloning OpenPCDet ..."
   git clone https://github.com/open-mmlab/OpenPCDet.git "$OPENPCDET_DIR"
 fi
 
 actual_commit=$(git -C "$OPENPCDET_DIR" rev-parse HEAD)
 if [ "$actual_commit" != "$PINNED_COMMIT" ]; then
-  echo "  Pinning to commit $PINNED_COMMIT …"
+  echo "  Pinning to commit $PINNED_COMMIT ..."
+  git -C "$OPENPCDET_DIR" fetch --quiet
   git -C "$OPENPCDET_DIR" checkout "$PINNED_COMMIT"
 fi
 echo "  OpenPCDet at $PINNED_COMMIT"
 
-step "Installing PyTorch + OpenPCDet deps …"
-pip install torch==2.4.1 --index-url https://download.pytorch.org/whl/cu124 -q
-pip install spconv-cu124 -q
+step "Installing OpenPCDet deps ..."
+# Do NOT install a fresh torch -- use whatever CUDA-matched version is already
+# on the pod. Installing a mismatched torch breaks torchaudio/torchvision.
+python -c "import torch; print('  torch', torch.__version__, '| CUDA', torch.version.cuda)"
+
+# spconv: pick wheel matching the pod's CUDA version (12.x -> cu120 or cu121)
+CUDA_SHORT=$(python -c "import torch; v=torch.version.cuda or '12.0'; print(''.join(v.split('.')[:2]))" 2>/dev/null || echo "120")
+echo "  Installing spconv-cu${CUDA_SHORT} ..."
+pip install spconv-cu"${CUDA_SHORT}" -q 2>/dev/null || {
+  echo "  spconv-cu${CUDA_SHORT} not found, falling back to spconv-cu120 ..."
+  pip install spconv-cu120 -q
+}
+
 pip install -r "$OPENPCDET_DIR/requirements.txt" -q
-pip install -e "$OPENPCDET_DIR" -q
 
-step "Installing gitm package …"
-pip install -e "$REPO_ROOT[dev,bench,nvidia]" -q
+# --no-build-isolation: lets the editable install see the already-installed
+# torch so setup.py's torch.cuda version check doesn't fail.
+echo "  pip install -e OpenPCDet (no-build-isolation) ..."
+pip install -e "$OPENPCDET_DIR" --no-build-isolation -q
 
-# ── 3. Pull + verify checkpoint ──────────────────────────────────────────────
+# ── 3. Install gitm package ──────────────────────────────────────────────────
 
-step "Checking checkpoint …"
+step "Installing gitm package ..."
+pip install -e "$REPO_ROOT[dev,bench,nvidia]" --no-build-isolation -q
+echo "  gitm package installed."
+
+# ── 4. Pull + verify checkpoint ─────────────────────────────────────────────
+
+step "Checking checkpoint ..."
 mkdir -p "$CKPT_DIR"
 if [ ! -f "$CKPT_PATH" ]; then
   if [ -z "$CKPT_URL" ]; then
-    echo "ERROR: checkpoint not found and CKPT_URL is not set." >&2
-    echo "  Download manually or set CKPT_URL to the pre-signed URL from Adit." >&2
-    echo "  Checkpoint: https://drive.google.com/file/d/1wMxWTpU1qUoY3DsCH31WJmvJxcjFXKlm" >&2
-    exit 1
+    # Try gdown for the public OpenPCDet Google Drive release
+    echo "  No CKPT_URL set -- trying gdown for public OpenPCDet checkpoint ..."
+    pip install gdown -q
+    gdown "1wMxWTpU1qUoY3DsCH31WJmvJxcjFXKlm" -O "$CKPT_PATH" || {
+      echo "ERROR: checkpoint not found and gdown failed." >&2
+      echo "  Set CKPT_URL to a pre-signed download URL and re-run." >&2
+      exit 1
+    }
+  else
+    echo "  Downloading checkpoint from CKPT_URL ..."
+    curl -L "$CKPT_URL" -o "$CKPT_PATH"
   fi
-  echo "  Downloading checkpoint …"
-  curl -L "$CKPT_URL" -o "$CKPT_PATH"
 fi
 actual_sha=$(sha256sum "$CKPT_PATH" | awk '{print $1}')
 if [ "$actual_sha" != "$EXPECTED_CKPT_SHA" ]; then
-  echo "ERROR: checkpoint sha256 mismatch" >&2
+  echo "ERROR: checkpoint sha256 mismatch." >&2
   echo "  expected: $EXPECTED_CKPT_SHA" >&2
   echo "  actual:   $actual_sha" >&2
   exit 1
 fi
 echo "  Checkpoint sha256 OK"
 
-# ── 4. Generate sha256 manifest ──────────────────────────────────────────────
+# ── 5. Generate + verify sha256 manifest ────────────────────────────────────
 
-step "Generating sha256 manifest …"
+step "Generating sha256 manifest ..."
 python "$REPO_ROOT/harness/gen_kitti_manifest.py" \
-  --root "$GITM_DATA_ROOT/kitti/training" \
+  --root "$KITTI_TRAINING" \
   --out  "$REPO_ROOT/benchmarks/kitti/manifest.yaml"
 echo "  Manifest written."
 
-step "Verifying manifest (fast mode) …"
+step "Verifying manifest (fast mode) ..."
 python "$REPO_ROOT/harness/verify_manifest.py" --fast
 echo "  Manifest verified."
 
-# ── 5. Smoke test ────────────────────────────────────────────────────────────
+# ── 6. Smoke test ───────────────────────────────────────────────────────────
 
-step "Smoke test (10 frames) …"
-export GITM_DATA_ROOT OPENPCDET_CFG="$CFG_PATH" OPENPCDET_CKPT="$CKPT_PATH"
-python "$REPO_ROOT/harness/smoke_kitti.py" \
-  --cfg "$CFG_PATH" --ckpt "$CKPT_PATH" --n-frames 10
+step "Smoke test (10 frames) ..."
+export PYTHONPATH="$OPENPCDET_DIR:${PYTHONPATH:-}"
+GITM_DATA_ROOT="$GITM_DATA_ROOT" \
+OPENPCDET_CFG="$CFG_PATH" \
+OPENPCDET_CKPT="$CKPT_PATH" \
+  python "$REPO_ROOT/harness/smoke_kitti.py" \
+    --cfg "$CFG_PATH" --ckpt "$CKPT_PATH" --n-frames 10
 echo "  Smoke test passed."
 
-# ── 6. Run 6-seed baselines ──────────────────────────────────────────────────
+# ── 7. Run 6-seed baselines ─────────────────────────────────────────────────
 
-step "Running 6-seed baselines (this takes ~1 hour) …"
+step "Running 6-seed baselines (approx 75-100 min) ..."
 GITM_DATA_ROOT="$GITM_DATA_ROOT" \
 OPENPCDET_CFG="$CFG_PATH" \
 OPENPCDET_CKPT="$CKPT_PATH" \
   bash "$REPO_ROOT/harness/run_baselines.sh"
 
-# ── 7. Remind: commit results ────────────────────────────────────────────────
+# ── 8. Auto-fill results docs ────────────────────────────────────────────────
+
+step "Filling spec.md + results.md ..."
+GITM_DATA_ROOT="$GITM_DATA_ROOT" python "$REPO_ROOT/harness/fill_results.py"
+
+# ── 9. Remind: commit ───────────────────────────────────────────────────────
 
 echo ""
 echo "================================================================"
-echo "  All done. Fill measured numbers into:"
-echo "    benchmarks/kitti/spec.md    (Section 3 + 5 tables)"
-echo "    benchmarks/kitti/results.md (baseline table)"
-echo ""
-echo "  Then commit and push:"
+echo "  All done. Commit and push:"
+echo "    cd $REPO_ROOT"
 echo "    git add benchmarks/kitti/manifest.yaml benchmarks/kitti/spec.md benchmarks/kitti/results.md"
 echo "    git commit -m 'KITTI: fill measured baseline numbers'"
 echo "    git push"
