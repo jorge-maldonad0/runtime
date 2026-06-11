@@ -24,4 +24,3 @@ jobs:
           gemini-key: ${{ secrets.GEMINI_API_KEY }}
           model: "gemini-2.5-pro"
           context-lines: 10
-          add-files: "false" # Pass the full contents of changed files, not just the raw diff
