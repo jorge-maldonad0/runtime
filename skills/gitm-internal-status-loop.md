@@ -274,7 +274,7 @@ GITHUB_REPO             # jorge-maldonad0/runtime (fork of GitM-Labs/runtime)
 
 ```bash
 curl -o ~/.hermes/skills/gitm-internal-status-loop.md \
-  https://raw.githubusercontent.com/GitM-Labs/runtime/main/skills/gitm-internal-status-loop.md
+  https://raw.githubusercontent.com/jorge-maldonad0/runtime/main/skills/gitm-internal-status-loop.md
 
 hermes skills list | grep gitm-internal-status-loop
 ```
