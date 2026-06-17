@@ -171,7 +171,7 @@ This is the first source to run. GitHub has the cleanest API and requires no scr
 
 ### Auth
 ```
-GITHUB_TOKEN    # already in ~/.hermes/.env
+GITHUB_TOKEN    # read from environment
 GITHUB_ORG      # GitM-Labs
 ```
 
