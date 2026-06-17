@@ -15,11 +15,11 @@ Use Hermes native cron — do not use crontab. hermes chat requires an interacti
 Register the three jobs:
 
 ```bash
-hermes cron create --skill gitm-internal-status-loop --prompt "run standup mode" --schedule "0 9 * * 1-5" --name "gitm-standup"
+hermes cron create --skills gitm-internal-status-loop --prompt "run standup mode" --schedule "0 9 * * 1-5" --name "gitm-standup"
 
-hermes cron create --skill gitm-internal-status-loop --prompt "check approval queue" --schedule "*/10 * * * 1-5" --name "gitm-approval-queue"
+hermes cron create --skills gitm-internal-status-loop --prompt "check approval queue" --schedule "*/10 * * * 1-5" --name "gitm-approval-queue"
 
-hermes cron create --skill gitm-internal-status-loop --prompt "check airtable changes" --schedule "*/10 * * * 1-5" --name "gitm-airtable-sync"
+hermes cron create --skills gitm-internal-status-loop --prompt "check airtable changes" --schedule "*/10 * * * 1-5" --name "gitm-airtable-sync"
 ```
 
 Verify:
@@ -33,6 +33,11 @@ The Hermes gateway must be running for cron jobs to execute:
 hermes gateway run &
 ```
 
+If the VM restarts, the gateway will not come back up automatically unless you have added it to startup:
+```bash
+echo "@reboot /root/.local/bin/hermes gateway run" | crontab -
+```
+
 ---
 
 ## Mode 1: Team standup (auto, 9:00 AM daily)
@@ -41,21 +46,29 @@ hermes gateway run &
 Cron. Runs at 9:00 AM every weekday. Invoked with prompt: `"run standup mode"`.
 
 ### Inputs
-- GitHub: commits from the last 24h across GitM-Labs repos (filter by author)
+- GitHub: commits from the last 24h from `jorge-maldonad0/runtime` (fork of GitM-Labs/runtime), filtered by author
 - Slack: `#gtm-standup` — messages posted since yesterday 9:00 AM
 - Airtable: `sprint_tracker` — rows where `updated_at` >= yesterday 9:00 AM
+
+### GitHub API call
+```
+GET https://api.github.com/repos/jorge-maldonad0/runtime/commits?since={yesterday_9am_iso}&per_page=100
+Authorization: token {GITHUB_TOKEN}
+```
+
+Filter results by commit author login or email to attribute commits to each intern. If the `sprint_tracker` table is empty or has no rows updated since yesterday, report `no activity logged` for Airtable — do not treat an empty response as an error.
 
 ### Steps
 
 1. For each intern (Asmar, Jane, Giancarlos, Danny, Khoa, Arshad):
-   - Pull their GitHub commits from the last 24h
+   - Pull their GitHub commits from the last 24h from `jorge-maldonad0/runtime`
    - Pull their Airtable rows where `owner` = their name and `updated_at` >= yesterday 9:00 AM
    - Pull any Slack messages they posted in `#gtm-standup` since yesterday
    - Synthesize into three fields:
      - **Yesterday:** what they shipped or progressed
      - **Today:** next open tasks from Airtable (status = In Progress or Up Next)
      - **Blockers:** blocker flags in Airtable OR blocker language in Slack messages
-   - DM each intern their summary for review:
+   - DM each intern their summary for review using their Slack user ID from `SLACK_INTERN_IDS`:
 
 ```
 Hey {name} - here's your standup for today:
@@ -69,7 +82,7 @@ Reply to correct anything before I post to #gtm-standup.
 
 2. Wait 15 minutes for replies. Apply any corrections.
 
-3. Compile all six summaries and post to `#gtm-standup`:
+3. Compile all six summaries and post to `#gtm-standup` using channel ID from `SLACK_STANDUP_CHANNEL`:
 
 ```
 *GTM standup - {date}*
@@ -87,8 +100,10 @@ Reply to correct anything before I post to #gtm-standup.
 ### Rules
 - Do not DM Jalon or any founder.
 - Do not post to `#gtm-founder-approvals`.
-- If an intern has no activity, mark Yesterday as `no activity logged` - do not omit them.
+- If an intern has no activity, mark Yesterday as `no activity logged` — do not omit them.
 - If Slack, GitHub, or Airtable is unreachable, log the error and skip that source. Do not fail the whole run.
+- Always use channel IDs (format: `C0XXXXXXXX`), never channel names, in all Slack API calls.
+- The fork `jorge-maldonad0/runtime` is not auto-synced. A sync cron job runs at 8:50 AM daily to pull latest commits from `GitM-Labs/runtime` before standup fires. If the sync job has not run yet, use whatever commits are available in the fork.
 
 ---
 
@@ -111,9 +126,9 @@ Trigger phrases for Slack scan: `"need sign-off"`, `"founder decision"`, `"block
 ### Steps
 
 1. Query Airtable `approval_queue` for rows where `status = pending`.
-2. Skip any rows already in `approved`, `rejected`, or `on_hold` - do not re-trigger.
+2. Skip any rows already in `approved`, `rejected`, or `on_hold` — do not re-trigger.
 3. Batch multiple pending items within a 5-minute window into a single DM.
-4. Fetch full context for each item and DM Jalon:
+4. Fetch full context for each item and DM Jalon using `SLACK_JALON_USER_ID`:
 
 ```
 *Approval needed: {trigger_type}*
@@ -133,7 +148,7 @@ Reply with *approve*, *reject*, or *hold*.
    - `reject` -> update Airtable row `status = rejected`, DM requesting intern with reason
    - `hold` -> update Airtable row `status = on_hold`, DM requesting intern
 
-6. Post summary to `#gtm-founder-approvals`:
+6. Post summary to `#gtm-founder-approvals` using channel ID from `SLACK_APPROVALS_CHANNEL`:
 
 ```
 *{trigger_type} - {approved/rejected/on_hold}*
@@ -147,6 +162,7 @@ Time to decision: {elapsed}
 ### Rules
 - Only DM Jalon. Do not DM other founders.
 - Do not post approval requests to `#gtm-standup`.
+- Always use Jalon's Slack user ID from `SLACK_JALON_USER_ID`, not his name or handle.
 
 ---
 
@@ -166,7 +182,7 @@ Cron poll every 10 minutes. Invoked with prompt: `"check airtable changes"`. Che
 
 1. Query `sprint_tracker` for rows changed since last poll.
 2. For each changed row, extract: `task_name`, `owner`, `status`, `updated_at`.
-3. Post to `#gtm-standup`:
+3. Post to `#gtm-standup` using channel ID from `SLACK_STANDUP_CHANNEL`:
 
 ```
 *Tracker update*
@@ -181,6 +197,7 @@ Status changed to: {status}
 #### Rules
 - Do not re-post if the row was already posted in the last poll cycle (check `sync_index` for existing `airtable_record_id`).
 - If Slack post fails, retry once after 30s, then log and continue.
+- An empty `sprint_tracker` is not an error — log `no_changes_found` and exit cleanly.
 
 ---
 
@@ -199,13 +216,13 @@ Cron poll every 10 minutes as fallback. Checks `#gtm-standup` for new thread rep
      ```
      [{slack_user_name} via Slack, {timestamp}]: {reply_text}
      ```
-   - Append only - never overwrite existing notes.
+   - Append only — never overwrite existing notes.
 5. React with a checkmark emoji to confirm sync.
 6. Log to `status_loop_runs`: `{ date, mode: "slack_to_airtable", record_id, slack_user }`.
 
 #### Rules
 - Append only to `notes` field.
-- Ignore replies from the Hermes bot account (prevents feedback loops).
+- Ignore replies from the Hermes bot account `U0B94BY1M2R` (prevents feedback loops).
 - If Airtable write fails, retry once after 30s, then DM the reply author: `"Could not sync your reply to the tracker - please update manually."`
 
 ---
@@ -220,20 +237,22 @@ Cron poll every 10 minutes as fallback. Checks `#gtm-standup` for new thread rep
 | `status_loop_runs` | `date`, `mode`, `status`, `interns_DMed`, `trigger_type`, `decision`, `elapsed_minutes`, `record_id`, `slack_user` |
 | `sync_index` | `airtable_record_id`, `slack_message_ts`, `slack_thread_ts`, `task_name`, `created_at` |
 
+Note: `sprint_tracker` must have rows with the correct `owner` field values (Asmar, Jane, Giancarlos, Danny, Khoa, Arshad) for standup data to appear. An empty table will result in `no activity logged` for all interns — this is expected behavior, not an error.
+
 ---
 
 ## Environment variables required
 
 ```
 SLACK_BOT_TOKEN         # needs chat:write, im:write, channels:read, channels:history
-SLACK_STANDUP_CHANNEL   # #gtm-standup channel ID
-SLACK_APPROVALS_CHANNEL # #gtm-founder-approvals channel ID
-SLACK_JALON_USER_ID     # Jalon's Slack user ID for DMs
-SLACK_INTERN_IDS        # JSON map: { "Asmar": "U...", "Jane": "U...", ... }
+SLACK_STANDUP_CHANNEL   # #gtm-standup channel ID (format: C0XXXXXXXX, not channel name)
+SLACK_APPROVALS_CHANNEL # #gtm-founder-approvals channel ID (format: C0XXXXXXXX)
+SLACK_JALON_USER_ID     # Jalon's Slack user ID (format: U0XXXXXXXX)
+SLACK_INTERN_IDS        # JSON map: { "Asmar": "U...", "Jane": "U...", "Giancarlos": "U...", "Danny": "U...", "Khoa": "U...", "Arshad": "U..." }
 AIRTABLE_API_KEY
 AIRTABLE_BASE_ID
-GITHUB_TOKEN            # read:org, repo scope
-GITHUB_ORG              # GitM-Labs
+GITHUB_TOKEN            # repo scope. Token belongs to jorge-maldonad0.
+GITHUB_REPO             # jorge-maldonad0/runtime (fork of GitM-Labs/runtime)
 ```
 
 ---
@@ -242,9 +261,12 @@ GITHUB_ORG              # GitM-Labs
 
 - Source unreachable (GitHub / Airtable / Slack): log warning, skip source, continue run. Append `[source unavailable]` to affected fields.
 - Slack DM delivery failure: retry once after 60s, then log to Airtable and continue.
-- No activity detected for an intern: do not skip - report `no activity logged`.
+- No activity detected for an intern: do not skip — report `no activity logged`.
+- Empty Airtable tables (`sprint_tracker`, `approval_queue`): not an error — log `no_changes_found` and exit cleanly.
 - Duplicate trigger detected (same `approval_queue` row): no-op, already handled.
 - Duplicate sync detected (same `airtable_record_id` in `sync_index`): no-op, skip re-post.
+- GitHub 404: check that `jorge-maldonad0/runtime` fork exists and GITHUB_TOKEN belongs to `jorge-maldonad0`.
+- Gateway not running: all cron jobs will silently fail. Run `ps aux | grep "hermes gateway"` to verify the gateway process is alive.
 
 ---
 
@@ -260,7 +282,10 @@ hermes skills list | grep gitm-internal-status-loop
 ## Test manually
 
 ```bash
-hermes chat --skill gitm-internal-status-loop "run standup mode"
-hermes chat --skill gitm-internal-status-loop "check approval queue"
-hermes chat --skill gitm-internal-status-loop "check airtable changes"
+hermes chat --skills gitm-internal-status-loop
+# then type: run standup mode
+# then type: check approval queue
+# then type: check airtable changes
 ```
+
+Note: the prompt must be typed interactively inside the chat session, not passed as an inline argument.
