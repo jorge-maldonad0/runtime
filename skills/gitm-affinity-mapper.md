@@ -175,10 +175,9 @@ Query `prospects` table for rows where `enrichment_status = pending`, limit 1.
 Use Apify LinkedIn Profile Scraper:
 
 ```
-POST https://api.apify.com/v2/acts/harvestapi~linkedin-profile-scraper/run-sync-get-dataset-items?timeout=60&memory=256
+POST https://api.apify.com/v2/acts/harvestapi~linkedin-profile-scraper/run-sync-get-dataset-items
 Authorization: Bearer {APIFY_API_TOKEN}
-Content-Type: application/json
-Body: { "linkedinUrls": ["{linkedin_url}"] }
+Body: { "profileUrls": ["{linkedin_url}"] }
 ```
 
 Extract from response (array, take index 0):
@@ -193,14 +192,11 @@ If Apify fails or returns no data: mark `enrichment_status = failed`, log to `st
 
 ### Step 3 — Extract affinity features
 
-From the response object (index 0 of returned array):
 - `education_schools`: all `education[].schoolName` values joined
 - `past_employers`: all `experience[].companyName` values (deduplicated)
 - `affiliations`: all `volunteering[].organizationName` values
 - `technical_signal`: 1-2 sentence summary from `headline` + `about` + top `skills[].name` values
 - `technical_keywords`: semicolon-separated matched keywords from `skills[].name` against keyword list
-
-If actor returns empty array: mark `enrichment_status = failed`, log to `status_loop_runs`, continue.
 
 ### Step 4 — Compute warmth per sender
 
@@ -305,7 +301,7 @@ Run affinity enrichment on the next pending prospect in the prospects table. Scr
 
 ```bash
 curl -o ~/.hermes/skills/gitm-affinity-mapper.md \
-  https://raw.githubusercontent.com/GitM-Labs/runtime/main/skills/gitm-affinity-mapper.md
+  https://raw.githubusercontent.com/jorge-maldonad0/runtime/main/skills/gitm-affinity-mapper.md
 
 hermes skills list | grep gitm-affinity-mapper
 ```

@@ -258,7 +258,7 @@ Upload to GitM-Labs/runtime, then on the VM:
 
 ```bash
 curl -o ~/.hermes/skills/gitm-signal-scan.md \
-  https://raw.githubusercontent.com/GitM-Labs/runtime/main/skills/gitm-signal-scan.md
+  https://raw.githubusercontent.com/jorge-maldonad0/runtime/main/skills/gitm-signal-scan.md
 
 hermes skills list | grep gitm-signal-scan
 ```

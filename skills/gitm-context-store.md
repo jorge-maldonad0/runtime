@@ -240,7 +240,7 @@ Expected response: voice rules for LinkedIn + Asmar's sender persona + active co
 
 ```bash
 curl -o ~/.hermes/skills/gitm-context-store.md \
-  https://raw.githubusercontent.com/GitM-Labs/runtime/main/skills/gitm-context-store.md
+  https://raw.githubusercontent.com/jorge-maldonad0/runtime/main/skills/gitm-context-store.md
 
 hermes skills list | grep gitm-context-store
 ```
