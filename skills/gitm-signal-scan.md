@@ -241,7 +241,7 @@ https://api.github.com/search/issues?q={keyword}+repo:{owner}/{repo}&sort=create
    ```
    { date, mode: "signal_scan_github", signals_found, signals_written, decision: "N signals written" }
    ```
-   > **PITFALL: `status_loop_runs.mode` single-select may not include `"signal_scan_github"`.** The Airtable schema had options `['standup', 'founder_approval', 'airtable_to_slack', 'slack_to_airtable']` as of June 2026. If `signal_scan_github` isn't an option, either add it to the Airtable field definition or use the closest match and note it in the `decision` field.
+   > **NOTE: `status_loop_runs.mode` now includes `"signal_scan_github"` (added late June 2026).** Valid `status` values: `ok`, `error`, `partial`. If `signal_scan_github` is missing, add it to the Airtable field single-select options. Fallback: use mode=`standup` and note the workaround in `decision`.
 
 ### Target: first 20 signals
 
@@ -263,11 +263,13 @@ Before each scan run, verify these Airtable table schemas match what this skill 
 |---|---|---|---|
 | `source` | `github`, `x`, `linkedin` | `github`, `x`, `llinkedin` (typo) | Writes to `llinkedin` instead of `linkedin` — fix the Airtable field option to `linkedin` |
 
-### `status_loop_runs` table — missing mode option
+### `status_loop_runs` table — mode option (now available)
 
-| Field | Expected | Actual | Impact |
-|---|---|---|---|
-| `mode` | `signal_scan_github` | `standup`, `founder_approval`, `airtable_to_slack`, `slack_to_airtable` | Cannot log scan runs properly — add `signal_scan_github` to the mode single-select list |
+| Field | Options | Notes |
+|---|---|---|
+| `mode` | `standup`, `founder_approval`, `airtable_to_slack`, `slack_to_airtable`, `signal_scan_github` | `signal_scan_github` added 2026-06-28 |
+| `status` | `ok`, `error`, `partial` | Use `ok` for clean runs |
+| `date` | Date field (YYYY-MM-DD format) | ISO timestamps rejected — use simple date |
 
 ### Field references
 
