@@ -1,4 +1,8 @@
-# gitm-affinity-mapper
+---
+name: gitm-affinity-mapper
+description: Light enrichment skill for Git.M's GTM agent stack. Runs on every prospect at top-of-funnel. Takes a LinkedIn profile URL, extracts public affinity features (education, prior employers, OSS, affiliations, conferences), computes warmth per sender, and writes results to sender_affinity_edges and scorer_ready_rows in Airtable.
+category: gitm
+---
 
 ## Description
 
@@ -177,7 +181,9 @@ Use Apify LinkedIn Profile Scraper:
 ```
 POST https://api.apify.com/v2/acts/harvestapi~linkedin-profile-scraper/run-sync-get-dataset-items?token={APIFY_API_TOKEN}
 
-Body: { "urls": ["{linkedin_url}"] }
+Body: { "urls": ["{linkedin_url_clean}"] }
+
+Note: Before calling, strip any locale suffix from linkedin_url (e.g. remove /en, /fr, /de from the end of the URL).
 ```
 
 Extract from response (array, take index 0):
@@ -188,7 +194,9 @@ Extract from response (array, take index 0):
 - `headline` → technical signal
 - `about` → technical signal supplement
 
-If Apify fails or returns no data: mark `enrichment_status = failed`, log to `status_loop_runs`, continue.
+If Apify fails or returns no data: mark `enrichment_status = failed`, log to `status_loop_runs`, continue to next prospect.
+
+
 
 ### Step 3 — Extract affinity features
 
@@ -234,10 +242,25 @@ Write 3 rows to `scorer_ready_rows` (one per sender) with:
 
 Set `enrichment_status = enriched` and `enriched_at = today` on the prospect row.
 
-### Step 8 — Log run
+### Step 8 — Log run to status_loop_runs
 
+Write a row to the `status_loop_runs` table. Note: this table has strict single-select enums — there is no `affinity_mapper` option in the `mode` field. Use `mode = "airtable_to_slack"` and `status = "ok"` or `"error"` as appropriate, and put the detailed context (prospect_id, enrichment_status, senders_computed) in the `decision` text field.
+
+Valid options (from Airtable schema):
+- `mode`: `standup`, `founder_approval`, `airtable_to_slack`, `slack_to_airtable`
+- `status`: `ok`, `error`, `partial`
+- `trigger_type`: `tool_account`, `copy_variant`, `infra`, `cross_team_blocker`
+
+Other available fields: `date` (date), `record_id` (single line text), `interns_DMed` (number), `elapsed_minutes` (number), `slack_user` (single line text)
+
+Example success log:
+```json
+{ "date": "2026-06-28", "mode": "airtable_to_slack", "status": "ok", "decision": "affinity_mapper: prospect_lambda_guangyao_li — 3 senders computed, all cold_stranger" }
 ```
-{ date, mode: "affinity_mapper", prospect_id, enrichment_status, senders_computed: 3 }
+
+Example failure log:
+```json
+{ "date": "2026-06-28", "mode": "airtable_to_slack", "status": "error", "decision": "affinity_mapper: prospect_lambda_guangyao_li failed — Apify scraper returned empty data" }
 ```
 
 ---
@@ -257,10 +280,11 @@ Before writing any row:
 
 ## Error Handling
 
-- Apify returns no data: `enrichment_status = failed`, log, continue to next prospect
+- Apify returns no data: do NOT attempt to write basic/stub affinity edges without profile data — there's no basis for even cold_stranger. Mark `enrichment_status = failed`, log to `status_loop_runs`, continue to next prospect.
 - Airtable write fails: retry once after 30s, log and continue
 - Warmth evidence missing for non-cold warmth: fall back to `cold_stranger = 0.1`
 - Partial data (e.g. education found but no employers): write what was found, set `confidence_score = 2`
+- Insufficient permissions to create new singleSelect options in Airtable: use only existing options in the field's enum. If logging to `status_loop_runs`, use the closest valid `mode` option rather than trying to create a new one.
 
 ---
 
