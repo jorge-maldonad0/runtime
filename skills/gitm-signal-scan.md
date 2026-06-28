@@ -1,3 +1,9 @@
+---
+name: gitm-signal-scan
+description: Signal discovery skill for Git.M's GTM agent stack. Crawls GitHub, LinkedIn, and X for public GPU-pain signals matching Git.M's ICP.
+tags: [gtm, signals, github, airtable, scanning]
+---
+
 # gitm-signal-scan
 
 ## Description
@@ -170,10 +176,19 @@ Higher rank_score = higher priority for outreach queue.
 This is the first source to run. GitHub has the cleanest API and requires no scraping.
 
 ### Auth
+
 ```
-GITHUB_TOKEN    # read from environment
-GITHUB_ORG      # GitM-Labs
+GITHUB_TOKEN    # read from environment — token is required for authenticated requests (5000 req/hr vs 60 req/hr unauthenticated)
 ```
+
+> **NOTE: Always verify token is loaded from env before making requests. Use `os.environ.get("GITHUB_TOKEN", "")` and check length > 0.**
+>
+> **PITFALL: GITHUB_TOKEN may be set but empty.** `$([ -n "$GITHUB_TOKEN" ] && echo yes)` returns "yes" even when the value is `""` (empty string). Python's `os.environ['GITHUB_TOKEN']` will return `""` — causing 401 errors. The unauthenticated API works but is rate-limited (60 req/hr). Always verify the token is actually non-empty before relying on it:
+>
+> ```python
+> token = os.environ.get('GITHUB_TOKEN') or ''
+> headers = {'Authorization': f'token {token}'} if token else {'Accept': 'application/vnd.github.v3+json'}
+> ```
 
 ### Search query format
 
@@ -182,34 +197,84 @@ GitHub code search API:
 https://api.github.com/search/issues?q={keyword}+repo:{owner}/{repo}&sort=created&order=desc&per_page=20
 ```
 
+> **PITFALL: GitHub's quoted-phrase search is fuzzy.** Results returned by `"GPU utilization"` may NOT all contain the exact phrase — GitHub applies loose matching and can return items where the terms appear near each other rather than as a contiguous string. Always verify with a regex match on title + body before recording the raw_quote. Only ~20-30% of returned items typically have the literal phrase.
+>
+> ```python
+> import re
+> match = re.search(r'[^.]*' + re.escape(keyword) + r'[^.]*\.', full_text, re.IGNORECASE)
+> raw_quote = match.group(0).strip() if match else ''
+> ```
+
 ### Steps
 
 1. For each repo in the target repo list:
    - For each keyword in the trigger keyword library:
      - Query GitHub issues and PRs created in the last 90 days
-     - Filter results where the keyword appears in title OR body
+     - Filter results where the keyword appears in title OR body (verify with regex — see pitfall above)
      - Extract: issue/PR URL, title, body excerpt (first 500 chars), author login, created_at date
-     - Look up author profile: name, company field, location
+     - Look up author profile via `GET /users/{login}`: name, company field, location
+       - **name fallback**: if `name` is `null` in the API response, use `login` as the display name
+       - **company fallback**: if `company` is `null`, leave as empty string
      - Skip bots (author login contains `[bot]`)
 
 2. For each result:
    - Compute `days_since_signal` = today - created_at
    - Compute `signal_recency` = exp(-days_since_signal / 30)
-   - Extract the matching keyword and a 1-2 sentence `pain_summary`
-   - Classify `pain_category` from keyword matched
+   - Extract the exact matching sentence as `raw_quote` via regex (`[^.]*{keyword}[^.]*\.`)
+   - Write a 1-2 sentence `pain_summary` describing the problem the user is actually facing (not just restating the keyword)
+   - Classify `pain_category` from the keyword matched (map from keyword library above)
    - Set `pain_acknowledged = 1`
-   - Set `icp_fit` based on company field (phase_1 if orchestrator/managed GPU, phase_2 if biotech/robotics/HPC, else unknown)
-   - Compute `rank_score`
+   - Set `icp_fit`:
+     - `phase_1`: company is an orchestrator / managed GPU provider (e.g. RunPod, Vast.ai, Lambda, CoreWeave, Salad, Replicate, Together)
+     - `phase_2`: vertical-specific compute (biotech, robotics, HPC, sovereign compute)
+     - `unknown`: big-tech companies (Meta, NVIDIA, AMD, Intel, Google, Microsoft, Amazon — they build in-house), consultancies, or missing company field
+   - Set `vertical`:
+     - Infer from company vertical if known (biotech, robotics, hpc, managed_gpu, sovereign_compute)
+     - Default to `other` for tools/infra repos like pytorch/pytorch where contributors work on the framework itself, not on GPU-consuming applications
+   - Compute `rank_score` = signal_recency × icp_weight
 
 3. Deduplicate: if same author appears more than once, keep the highest rank_score row only.
 
 4. Write top 20 results sorted by `rank_score` descending to Airtable `signals` table.
 
-5. Log run to Airtable `status_loop_runs`: `{ date, mode: "signal_scan_github", signals_found, signals_written: 20 }`.
+5. Log run to Airtable `status_loop_runs`:
+   ```
+   { date, mode: "signal_scan_github", signals_found, signals_written, decision: "N signals written" }
+   ```
+   > **PITFALL: `status_loop_runs.mode` single-select may not include `"signal_scan_github"`.** The Airtable schema had options `['standup', 'founder_approval', 'airtable_to_slack', 'slack_to_airtable']` as of June 2026. If `signal_scan_github` isn't an option, either add it to the Airtable field definition or use the closest match and note it in the `decision` field.
 
 ### Target: first 20 signals
 
 Pull until 20 unique non-bot authors with valid signal records are written to Airtable.
+
+### Reference: real run output
+
+See `references/gpu-utilization-pytorch-scan-2026-06-28.md` for a concrete example of extraction logic, output shape, and Airtable schema quirks encountered during an actual run targeting "GPU utilization" on pytorch/pytorch.
+
+---
+
+## Part 5: Airtable Schema Hygiene
+
+Before each scan run, verify these Airtable table schemas match what this skill expects. Mismatches cause silent write failures or data-loss.
+
+### `signals` table — single-select option mismatches (as of June 2026)
+
+| Field | Expected (skill) | Actual (Airtable) | Impact |
+|---|---|---|---|
+| `source` | `github`, `x`, `linkedin` | `github`, `x`, `llinkedin` (typo) | Writes to `llinkedin` instead of `linkedin` — fix the Airtable field option to `linkedin` |
+
+### `status_loop_runs` table — missing mode option
+
+| Field | Expected | Actual | Impact |
+|---|---|---|---|
+| `mode` | `signal_scan_github` | `standup`, `founder_approval`, `airtable_to_slack`, `slack_to_airtable` | Cannot log scan runs properly — add `signal_scan_github` to the mode single-select list |
+
+### Field references
+
+```
+signals table id:   tblb13ohxggez10OC
+status_loop_runs:   tblrFUbyg9Y5l04Br
+```
 
 ---
 
