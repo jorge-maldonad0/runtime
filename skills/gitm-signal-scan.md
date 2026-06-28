@@ -177,19 +177,7 @@ This is the first source to run. GitHub has the cleanest API and requires no scr
 
 ### Auth
 
-```
-GITHUB_TOKEN    # read from environment — token is required for authenticated requests (5000 req/hr vs 60 req/hr unauthenticated)
-```
-
-> **NOTE: Always verify token is loaded from env before making requests. Use `os.environ.get("GITHUB_TOKEN", "")` and check length > 0.**
->
-> **PITFALL: GITHUB_TOKEN may be set but empty.** `$([ -n "$GITHUB_TOKEN" ] && echo yes)` returns "yes" even when the value is `""` (empty string). Python's `os.environ['GITHUB_TOKEN']` will return `""` — causing 401 errors. The unauthenticated API works but is rate-limited (60 req/hr). Always verify the token is actually non-empty before relying on it:
->
-> ```python
-> token = os.environ.get('GITHUB_TOKEN') or ''
-> headers = {'Authorization': f'token {token}'} if token else {'Accept': 'application/vnd.github.v3+json'}
-> ```
-
+GITHUB_TOKEN is in the environment. Always use it for every GitHub API request: Authorization: token {GITHUB_TOKEN}. Never fall back to unauthenticated requests. This gives 5000 req/hr vs 60 req/hr unauthenticated.
 ### Search query format
 
 GitHub code search API:
@@ -247,9 +235,10 @@ https://api.github.com/search/issues?q={keyword}+repo:{owner}/{repo}&sort=create
 
 Pull until 20 unique non-bot authors with valid signal records are written to Airtable.
 
-### Reference: real run output
+### Reference: real run outputs
 
-See `references/gpu-utilization-pytorch-scan-2026-06-28.md` for a concrete example of extraction logic, output shape, and Airtable schema quirks encountered during an actual run targeting "GPU utilization" on pytorch/pytorch.
+- `references/gpu-utilization-pytorch-scan-2026-06-28.md` — concrete example of extraction logic, output shape, and Airtable schema quirks (pytorch/pytorch scan).
+- `references/github-scan-deepspeed-transformers-2026-06-28.md` — example scan on DeepSpeed + transformers showing HTTP 422 handling, rate-limit exhaustion, and partial-results workflow.
 
 ---
 
@@ -306,6 +295,8 @@ Single select options for `status`: `new`, `enriched`, `scored`, `outreached`, `
 
 ## Running the scan manually
 
+### Option A: Hermes chat (interactive)
+
 Install the skill on the VM, then open a Hermes chat session:
 
 ```bash
@@ -316,6 +307,33 @@ Type inside the session:
 ```
 Run the GitHub signal scan. For each repo in the target list, search GitHub issues and PRs from the last 90 days using the trigger keyword library. Extract prospect name, company, title, source URL, signal date, raw quote, and pain summary for each match. Compute signal_recency and rank_score. Deduplicate by author. Write the top 20 results sorted by rank_score to the Airtable signals table using AIRTABLE_API_KEY and AIRTABLE_BASE_ID from the environment. Log the run to status_loop_runs.
 ```
+
+### Option B: Script (faster, deterministic — preferred)
+
+A reusable Python script lives at `scripts/github_scan.py`. It runs the full scan (all repos, all keywords), computes scores, deduplicates, writes to Airtable, and logs to status_loop_runs — all in one shot.
+
+Prerequisites:
+- `AIRTABLE_API_KEY` and `AIRTABLE_BASE_ID` must be set in the environment
+- `GITHUB_TOKEN` (optional but strongly recommended — without it, DeepSpeed/many Microsoft repos are inaccessible via HTTP 422, and unauthenticated rate limit is 60 req/hr)
+
+```bash
+cd ~/.hermes/skills/gitm/gitm-signal-scan
+python3 scripts/github_scan.py
+```
+
+The script handles:
+- Exact phrase verification (GitHub fuzzy-search results are post-filtered with regex)
+- Author profile lookups with fallback for null name/company fields
+- Bot filtering (author login containing `[bot]`)
+- Airtable writes with 250ms rate limiting between inserts
+- Run log to `status_loop_runs` with appropriate status (`ok` or `partial`)
+- Graceful degradation on unauthenticated 422 and rate-limit errors
+
+> **PITFALL: Microsoft repos (DeepSpeed, etc.) return HTTP 422 without a GITHUB_TOKEN.** The script handles this gracefully (prints the error, skips the repo), but you'll get zero results from those repos. Set a real GITHUB_TOKEN in the environment to resolve.
+
+> **PITFALL: Unauthenticated rate limit exhausted at ~16 API calls.** When running without a token, the 60 req/hr limit is consumed quickly (keyword queries + user profile lookups). The script catches 403 rate-limit errors and continues with partial results. With a GITHUB_TOKEN, the limit is 5000 req/hr and DeepSpeed becomes accessible.
+
+To reconfigure target repos or keywords, edit the `REPOS` and `KEYWORDS` lists at the top of `scripts/github_scan.py`.
 
 ---
 
