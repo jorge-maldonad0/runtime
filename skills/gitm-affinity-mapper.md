@@ -175,9 +175,9 @@ Query `prospects` table for rows where `enrichment_status = pending`, limit 1.
 Use Apify LinkedIn Profile Scraper:
 
 ```
-POST https://api.apify.com/v2/acts/harvestapi~linkedin-profile-scraper/run-sync-get-dataset-items
-Authorization: Bearer {APIFY_API_TOKEN}
-Body: { "profileUrls": ["{linkedin_url}"] }
+POST https://api.apify.com/v2/acts/harvestapi~linkedin-profile-scraper/run-sync-get-dataset-items?token={APIFY_API_TOKEN}
+
+Body: { "urls": ["{linkedin_url}"] }
 ```
 
 Extract from response (array, take index 0):
