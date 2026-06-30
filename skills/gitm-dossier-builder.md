@@ -1,3 +1,9 @@
+---
+name: gitm-dossier-builder
+description: Full enrichment skill for Git.M's GTM agent stack. Engagement-triggered — builds deep dossiers from Google Scholar, arXiv, Semantic Scholar, GitHub, blog, conference talks, and podcasts. Only runs when a prospect replies, opens repeatedly, or books a call.
+category: gitm
+---
+
 # gitm-dossier-builder
 
 ## Description
