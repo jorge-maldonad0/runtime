@@ -90,7 +90,7 @@ Target repos and orgs:
 | `vllm-project/vllm` | LLM inference — throughput and latency pain |
 | `NVIDIA/nccl` | Collective comms — NCCL bottleneck signals |
 | `NVIDIA/apex` | Mixed precision training — perf regression signals |
-| `microsoft/DeepSpeed` | Distributed training — memory and throughput pain |
+| `deepspeedai/DeepSpeed` | Distributed training — memory and throughput pain |
 | `huggingface/transformers` | Model training — GPU utilization signals |
 | `huggingface/accelerate` | Multi-GPU training — scheduling and sync pain |
 | `facebookresearch/xformers` | Attention kernels — memory and throughput |
