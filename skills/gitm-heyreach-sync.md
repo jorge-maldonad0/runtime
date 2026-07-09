@@ -13,6 +13,16 @@ This is the pipeline referenced as "Jorge (via HeyReach reply pipeline)" in `inp
 
 ---
 
+## Implementation notes (verified against a live run, 90 leads / 3 campaigns)
+
+Three things that are NOT obvious from a first read of the HeyReach API and broke the first implementation. Keep these correct or the run silently produces wrong data:
+
+1. **Lead identity is nested.** `firstName`, `lastName`, and `profileUrl` live inside a `linkedInUserProfile` sub-object on each lead, NOT at the top level. Read `lead["linkedInUserProfile"]["profileUrl"]`, etc. Reading top-level returns nulls and every row looks anonymous/unmatched.
+2. **Reply status is `MessageReply`, not `REPLIED`.** Detect a reply with `leadMessageStatus == "MessageReply"`. Checking for the string `"REPLIED"` matches nothing and no reply ever flips `prior_engagement`.
+3. **Airtable `performUpsert` is not supported on this base.** Use a find-or-create pattern instead: query the `replies` table for a row with the same `prospect_linkedin_url`, update it if found, otherwise create it. Do not rely on the upsert API.
+
+---
+
 ## HeyReach API reference
 
 Base host: `https://api.heyreach.io` (confirm against HeyReach docs if a call 404s).
@@ -33,8 +43,8 @@ Endpoints used:
 | `/api/public/li_account/GetAll` | POST | Sender LinkedIn accounts, to corroborate sender names if needed. |
 
 Per-lead fields of interest returned by `GetLeadsFromCampaign`:
-- `firstName`, `lastName`
-- `profileUrl` (LinkedIn URL — unique join key)
+- `linkedInUserProfile.firstName`, `linkedInUserProfile.lastName`  *(nested — see note 1)*
+- `linkedInUserProfile.profileUrl` (LinkedIn URL — unique join key, nested)
 - `linkedInSenderFullName` (which FDE sent it)
 - `leadCampaignStatus`, `leadConnectionStatus`, `leadMessageStatus`
 - `lastActionTime`
@@ -54,7 +64,7 @@ Hermes cron, once daily at 7:00 AM PST — ahead of the 8:50 fork sync and 9:00 
 
 1. `POST /api/public/campaign/GetAll`, filter to active campaigns (the three live senders: Asmar, Jane, Giancarlos; Evan later).
 2. For each active campaign, `POST /api/public/campaign/GetLeadsFromCampaign` and paginate on `offset`/`limit` until exhausted.
-3. Collect every lead with the fields listed above.
+3. Collect every lead, reading name and `profileUrl` from the `linkedInUserProfile` sub-object (note 1).
 
 Normalize `profileUrl` before using it as a key: strip locale suffixes (`/en`, `/fr`, etc.) and query params, same normalization the affinity mapper applies, so match keys are consistent across skills.
 
@@ -73,7 +83,7 @@ BENIGN_ERROR_CODES = {
 }
 
 classify(lead):
-    if replied (leadMessageStatus == "REPLIED" or leadCampaignStatus indicates a reply):
+    if leadMessageStatus == "MessageReply":     # note 2 — NOT "REPLIED"
         sender_status = "REPLIED";            replied = 1; failed = 0
     elif leadConnectionStatus indicates accepted/connected and not replied:
         sender_status = "CONNECTION_ACCEPTED"; replied = 0; failed = 0
@@ -92,14 +102,14 @@ Derived fields:
 - `failed_reason` (string or null): the raw `errorCode`, only when `sender_status == FAILED`. Null otherwise.
 - `last_action` (string): raw `leadMessageStatus`/action, including the benign code (e.g. `ConnectionRequestAlreadySent`) so the full picture is visible on benign rows.
 
-### Step 3 — Write to the `replies` table (dedup on `linkedin_url`)
+### Step 3 — Write to the `replies` table (find-or-create, dedup on `linkedin_url`)
 
-Upsert one row per prospect keyed on `prospect_linkedin_url`. Update in place if the row exists — never append duplicates. **Benign and connection-accept rows are written too, with their accurate `sender_status`** — not just replies and failures.
+**Airtable `performUpsert` is not supported on this base (note 3).** For each lead: query `replies` for an existing row with the same normalized `prospect_linkedin_url`; update it in place if found, otherwise create a new row. Never append duplicates. **Benign and connection-accept rows are written too, with their accurate `sender_status`** — not just replies and failures.
 
 | Field | Type | Source |
 |---|---|---|
-| `prospect_linkedin_url` | Single line text (primary) | HeyReach `profileUrl`, normalized — join key |
-| `prospect_name` | Single line text | `firstName` + `lastName` |
+| `prospect_linkedin_url` | Single line text (primary) | HeyReach `linkedInUserProfile.profileUrl`, normalized — join key |
+| `prospect_name` | Single line text | `linkedInUserProfile.firstName` + `lastName` |
 | `sender_name` | Single line text | `linkedInSenderFullName` |
 | `sender_id` | Single select | Mapped from sender name (see map below) |
 | `sender_status` | Single select | Classified: `REPLIED`, `CONNECTION_ACCEPTED`, `AWAITING_REPLY`, `BENIGN_NO_ACTION`, `FAILED` |
@@ -125,7 +135,7 @@ For each row where `replied == 1`:
 
 Only `REPLIED` rows touch the scorer. Connection-accepts, benign, and failed rows are recorded in `replies` but do not set `prior_engagement`.
 
-If no `prospects` match is found: leave `matched_prospect_id` null, `synced_to_scorer` false, note it. Do not create a prospect row from reply data — out of scope for v0.
+If no `prospects` match is found: leave `matched_prospect_id` null, `synced_to_scorer` false, note it. Do not create a prospect row from reply data — out of scope for v0. (Expected today: the current replies come from a different outreach list than the prospects table, so they write to `replies` unmatched and correctly do not touch the scorer. They flip automatically once those prospects are added.)
 
 A reply comes in through one sender, so this updates only that prospect-sender row.
 
@@ -153,7 +163,7 @@ Evan is added later. If a `sender_name` doesn't map, write the `replies` row but
 
 ## Downstream effect
 
-`gitm-dossier-builder` triggers on `scorer_ready_rows.prior_engagement = 1`. Once this skill is live and flipping that field, the dossier-builder trigger queue becomes real, so its cron can be registered (it was intentionally left unregistered until reply data was flowing).
+`gitm-dossier-builder` triggers on `scorer_ready_rows.prior_engagement = 1`. Once matched replies start flipping that field, the dossier-builder trigger queue becomes real, so its cron can be registered (it was intentionally left unregistered until reply data was flowing).
 
 ---
 
@@ -176,7 +186,7 @@ Evan is added later. If a `sender_name` doesn't map, write the `replies` row but
 - Airtable write fails: retry once after 30s, log, continue to next lead.
 - Unmappable `sender_name`: write `replies` row without `sender_id`, skip scorer write, note it.
 - Unknown `errorCode`: classify `BENIGN_NO_ACTION`, never `FAILED`, add manual-review note.
-- Duplicate lead (same `linkedin_url`): update in place, never append.
+- Duplicate lead (same `linkedin_url`): update in place (find-or-create), never append.
 
 ---
 
@@ -190,22 +200,33 @@ AIRTABLE_BASE_ID        # appi400mk6PHDF6Ex (GTM Reservoir)
 
 ---
 
-## Airtable setup required
+## Airtable setup required (already applied)
 
-The `replies` table already exists (`tbljG6baSvcCQt8G3`). Two adjustments needed before first run:
+The `replies` table exists (`tbljG6baSvcCQt8G3`). These were added and are in place:
 
-1. On `replies.sender_status`, add the single-select option **`BENIGN_NO_ACTION`** (existing options: `REPLIED`, `AWAITING_REPLY`, `CONNECTION_ACCEPTED`, `FAILED`).
-2. On `status_loop_runs.mode`, add the single-select option **`heyreach_sync`**, or the Step 5 log write fails.
+1. `replies.sender_status` single-select option **`BENIGN_NO_ACTION`** (alongside `REPLIED`, `AWAITING_REPLY`, `CONNECTION_ACCEPTED`, `FAILED`).
+2. `status_loop_runs.mode` single-select option **`heyreach_sync`**.
 
 ---
 
 ## Cron schedule
 
-Register after the first manual run passes:
+Currently running as a self-contained, no-agent job (avoids the agent-exploration stall on scheduled runs). Registered 2026-07-08:
+
+```bash
+hermes cron create "0 7 * * *" "poll heyreach replies and sync to airtable" \
+  --script heyreach_sync.sh --no-agent --name gitm-heyreach-sync
+```
+
+Execution chain: cron → `/root/.hermes/scripts/heyreach_sync.sh` (no-agent; sources `~/.hermes/.env`) → execs `fetch_heyreach.py`, which performs all five steps. Job id `852040bf98c2`, next run daily 7:00 AM PST.
+
+**Both `heyreach_sync.sh` and `fetch_heyreach.py` must be version-controlled in the fork** (e.g. under `scripts/`) — the actual logic lives in `fetch_heyreach.py`, and this SKILL.md alone does not capture it. If re-registering from scratch as an agent skill instead, the equivalent form is:
 
 ```bash
 hermes cron create "0 7 * * *" "poll heyreach replies and sync to airtable" --skill gitm-heyreach-sync --name gitm-heyreach-sync
 ```
+
+Use one or the other, not both — do not double-register.
 
 ---
 
@@ -218,22 +239,37 @@ hermes chat --skill gitm-heyreach-sync --yolo
 Then type:
 
 ```
-Poll HeyReach across the active campaigns using GetAll then GetLeadsFromCampaign with the X-API-KEY header. Classify each lead (replied / connection accepted / awaiting / benign / failed) per the skill rules, normalize profileUrl, and upsert into the replies table keyed on prospect_linkedin_url. For each replied lead, resolve linkedin_url to prospect_id via the prospects table, map sender name to sender_id, and set prior_engagement = 1 on the matching scorer_ready_rows row. Log the run to status_loop_runs with mode heyreach_sync.
+Poll HeyReach across the active campaigns using GetAll then GetLeadsFromCampaign with the X-API-KEY header. Read name and profileUrl from the linkedInUserProfile sub-object. Classify each lead (reply = leadMessageStatus MessageReply; connection accepted / awaiting / benign / failed per the rules), normalize profileUrl, and find-or-create into the replies table keyed on prospect_linkedin_url. For each replied lead, resolve linkedin_url to prospect_id via the prospects table, map sender name to sender_id, and set prior_engagement = 1 on the matching scorer_ready_rows row. Log the run to status_loop_runs with mode heyreach_sync.
 ```
 
-**Validation oracle (from the discovery run, last 30 days):** exactly two real replies should flip `prior_engagement = 1`, assuming both resolve against `prospects`:
-- Jane Dong → Li (`ltfang`), 2026-07-01
-- Asmar Khasmammadli → Andrew Birnberg (`andrew-birnberg`), 2026-06-23
-
-Also expect roughly: Jane ~22 `BENIGN_NO_ACTION` (ConnectionRequestAlreadySent) + ~4 `CONNECTION_ACCEPTED`; Giancarlos ~3 `BENIGN_NO_ACTION` (CannotSendMessage_Timeout) + ~5 `CONNECTION_ACCEPTED`; Asmar ~4 `CONNECTION_ACCEPTED`. Zero rows in `failed` on this pass (no fatal codes defined yet). If anything lands in `FAILED`, the classifier is mis-bucketing a benign code.
+**Validation oracle (last 30 days):** 2 real replies — Jane Dong → Li (`ltfang`, 2026-07-01) and Asmar Khasmammadli → Andrew Birnberg (`andrew-birnberg`, 2026-06-23). They flip `prior_engagement = 1` only once the matching prospects exist in `prospects`; until then they land in `replies` with `synced_to_scorer = false`. Expect ~11 `CONNECTION_ACCEPTED`, ~21 `BENIGN_NO_ACTION`, and 0 `FAILED`. Anything in `FAILED` means a benign code is being mis-bucketed.
 
 ---
 
 ## Install
 
+The cron execs `fetch_heyreach.py` from inside the skill dir, so the install must fetch the
+worker too — curling `SKILL.md` alone leaves the 7 AM job failing with file-not-found.
+
 ```bash
-curl -o ~/.hermes/skills/gitm/gitm-heyreach-sync/SKILL.md \
+mkdir -p ~/.hermes/skills/gitm/gitm-heyreach-sync ~/.hermes/scripts
+
+# skill doc
+curl -fsSL -o ~/.hermes/skills/gitm/gitm-heyreach-sync/SKILL.md \
   https://raw.githubusercontent.com/jorge-maldonad0/runtime/main/skills/gitm-heyreach-sync.md
+
+# worker (the actual logic the cron runs)
+curl -fsSL -o ~/.hermes/skills/gitm/gitm-heyreach-sync/fetch_heyreach.py \
+  https://raw.githubusercontent.com/jorge-maldonad0/runtime/main/skills/gitm-heyreach-sync/fetch_heyreach.py
+
+# runner
+curl -fsSL -o ~/.hermes/scripts/heyreach_sync.sh \
+  https://raw.githubusercontent.com/jorge-maldonad0/runtime/main/scripts/heyreach_sync.sh
+chmod +x ~/.hermes/scripts/heyreach_sync.sh
 
 hermes skills list | grep gitm-heyreach-sync
 ```
+
+`heyreach_sync.sh` is `source /root/.hermes/.env` then `exec python3 <skill dir>/fetch_heyreach.py`.
+The `source` (not `export $(... xargs)`) is deliberate: it preserves the `=` inside
+`HEYREACH_API_KEY`. Do not change it to the xargs pattern.
