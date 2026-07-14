@@ -103,6 +103,8 @@ Examples:
 
 **Pitfall — Multiple sender_affinity_edges records may exist.** The same prospect-sender pair can have both a generic scrape-based edge (with notes like "manual review needed") and a detailed one with full technical_signal text. When multiple records exist, prefer the one with the longer/more detailed technical_signal for domain inference.
 
+**Pitfall — outreach_drafts table ID vs replies table ID.** The Airtable `outreach_drafts` table has ID `tblqSkcYEOlGbvFwz`. Do NOT use `tbljG6baSvcCQt8G3` — that is the `replies` (HeyReach reply data) table with a completely different schema. The replies table has fields like `sender_status`, `replied`, `last_action`, `prospect_linkedin_url` — none of which match the draft schema. Always verify the table ID via the Airtable meta API or by checking field names before writing.
+
 ---
 
 ## Failure Mode Slot Fill (sanity-check only)
@@ -120,6 +122,18 @@ Examples:
 - "scale-up training runs quietly burn GPU time nobody can trace"
 - "p99 latency spikes after the model hits a certain context length"
 - "NCCL collectives become the bottleneck once you go past 8 GPUs"
+
+---
+
+## Pipeline Script
+
+A reusable draft-voice pipeline script is available at `scripts/draft-pipeline.py`. It handles the full flow: prospect lookup, sender persona pull, Pinecone voice rule retrieval, variant selection, slot fill, message drafting, Airtable write, and status logging. Run it via:
+
+```bash
+cd ~/.hermes/skills/gitm/gitm-draft-voice && python3 scripts/draft-pipeline.py
+```
+
+The script handles env sourcing internally via `subprocess` — no bash wrapper needed.
 
 ---
 
@@ -157,7 +171,28 @@ Body: { "model": "openai/text-embedding-3-small", "input": "{query}" }
 
 Extract the top 5 voice rules from Pinecone results. These will constrain the draft.
 
-**IMPLEMENTATION NOTE (critical):** Do the embedding + Pinecone query in a single Python script using the `execute_code` tool. Read all API keys with `os.environ['OPENROUTER_API_KEY']` and `os.environ['PINECONE_API_KEY']` INSIDE the Python code. Do NOT interpolate keys into shell commands, echo them, or write them to intermediate files — the shell masks secret values as `***`, which corrupts the key and causes 401/402 errors. The keys are already present in the environment; read them directly in-process. Use `urllib.request` (stdlib), not `requests`. Pinecone host: `https://gitm-context-store-kjtkn5t.svc.aped-4627-b74a.pinecone.io/query`, header `Api-Key`, body `{"vector": [...], "topK": 5, "includeMetadata": true, "filter": {"record_type": "voice_rule"}}`.
+**IMPLEMENTATION NOTE (critical):** Do the embedding + Pinecone query in a single Python script. Read all API keys with `os.environ['OPENROUTER_API_KEY']` and `os.environ['PINECONE_API_KEY']` INSIDE the Python code. Do NOT echo keys or interpolate them into shell commands — the shell masks secret values as `***`, which corrupts the key and causes 401/402 errors.
+
+**HOWEVER — `os.environ` is NOT enough.** The `.env` file uses `KEY=value` (no `export`), so `os.environ` in a script run via `terminal()` will not see these keys even after `source /root/.hermes/.env`. The solution: use `subprocess.run` to source the `.env` with `set -a` (auto-export) and capture the values, then inject them into `os.environ`:
+
+```python
+import os, json, urllib.request, subprocess
+result = subprocess.run(['bash', '-c', 'set -a; source /root/.hermes/.env; set +a; echo AK=$AIRTABLE_API_KEY; echo OR=$OPENROUTER_API_KEY'],
+    capture_output=True, text=True, timeout=10)
+for line in result.stdout.strip().split('\n'):
+    if '=' in line:
+        k, v = line.split('=', 1)
+        if k == 'OR': os.environ['OPENROUTER_API_KEY'] = v.strip()
+        elif k == 'AK': os.environ['AIRTABLE_API_KEY'] = v.strip()
+```
+
+This pattern works because the bash subprocess sources the file with `set -a` (export all), echoes the values to stdout, and the parent Python captures them without shell masking. Then `os.environ.get()` picks them up cleanly.
+
+The `execute_code` tool does NOT inherit `.env` variables either (same limitation). Always run the pipeline script via `terminal()` with a standalone `.py` file, not `execute_code`.
+
+Pinecone host: `https://gitm-context-store-kjtkn5t.svc.aped-4627-b74a.pinecone.io/query`, header `Api-Key`, body `{"vector": [...], "topK": 5, "includeMetadata": true, "filter": {"record_type": "voice_rule"}}`.
+
+**Pitfall — Pinecone metadata field names may vary** — the `metadata` dict from Pinecone matches may not have fields named `text`, `rule_text`, or `content`. If the fallback to `context_voice_rules` Airtable table is viable, prefer it. Or inspect the raw match metadata in a test run first.
 
 ### Step 4 — Select variant
 
@@ -187,7 +222,9 @@ Final message should be 3-4 sentences maximum. LinkedIn message length.
 
 ### Step 8 — Write to Airtable
 
-Write one row to `outreach_drafts` with all fields. Set `status = pending_review`.
+**Dedup check first:** Before writing, query `outreach_drafts` for an existing row matching this `prospect_id` + `sender_id` pair. If one already exists, skip the write and move on — do NOT create a duplicate. Only write if no matching row exists.
+
+Write one row to `outreach_drafts` with all fields. Set `status = pending_review`. Write exactly ONE row per prospect-sender pair per run — never write the same pair twice in a single run.
 
 ### Step 9 — Log run to status_loop_runs
 
@@ -211,6 +248,7 @@ Before writing any row:
 6. If `variant_id = v0_sanity_check`, `failure_mode_used` must be present
 7. Draft message contains no em dashes (—)
 8. Draft message is under 400 characters
+9. No existing `outreach_drafts` row exists for this `prospect_id` + `sender_id` pair — dedup before writing
 
 ---
 
