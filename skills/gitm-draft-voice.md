@@ -99,6 +99,10 @@ Examples:
 - Lambda + ML platform → "GPU-accelerated ML serving"
 - HPC lab → "scientific compute workloads"
 
+**Pitfall — current_title may be inaccurate.** Some scorer_ready_rows records have current_title set to the company name (e.g. "Rescale" instead of "Director of Strategic Finance"). When current_title duplicates current_company, cross-reference with sender_affinity_edges records for the same prospect_id — the technical_signal field there often contains the real title from the LinkedIn profile scrape. This matters because the domain should reflect the company's core business, not be misdirected by a missing title.
+
+**Pitfall — Multiple sender_affinity_edges records may exist.** The same prospect-sender pair can have both a generic scrape-based edge (with notes like "manual review needed") and a detailed one with full technical_signal text. When multiple records exist, prefer the one with the longer/more detailed technical_signal for domain inference.
+
 ---
 
 ## Failure Mode Slot Fill (sanity-check only)
@@ -153,6 +157,8 @@ Body: { "model": "openai/text-embedding-3-small", "input": "{query}" }
 
 Extract the top 5 voice rules from Pinecone results. These will constrain the draft.
 
+**IMPLEMENTATION NOTE (critical):** Do the embedding + Pinecone query in a single Python script using the `execute_code` tool. Read all API keys with `os.environ['OPENROUTER_API_KEY']` and `os.environ['PINECONE_API_KEY']` INSIDE the Python code. Do NOT interpolate keys into shell commands, echo them, or write them to intermediate files — the shell masks secret values as `***`, which corrupts the key and causes 401/402 errors. The keys are already present in the environment; read them directly in-process. Use `urllib.request` (stdlib), not `requests`. Pinecone host: `https://gitm-context-store-kjtkn5t.svc.aped-4627-b74a.pinecone.io/query`, header `Api-Key`, body `{"vector": [...], "topK": 5, "includeMetadata": true, "filter": {"record_type": "voice_rule"}}`.
+
 ### Step 4 — Select variant
 
 Apply variant selection logic from above.
@@ -183,11 +189,13 @@ Final message should be 3-4 sentences maximum. LinkedIn message length.
 
 Write one row to `outreach_drafts` with all fields. Set `status = pending_review`.
 
-### Step 9 — Log run
+### Step 9 — Log run to status_loop_runs
 
-```
-{ date, mode: "draft_voice", prospect_id, sender_id, variant_id, status: "ok" }
-```
+Write one row to `status_loop_runs` with fields:
+- `date` — today's date (e.g. `2026-07-09`)
+- `status` — `ok`, `error`, or `partial`
+
+Note: `status_loop_runs` only has three fields (`date`, `status`, `mode`). The `mode` field is a single-select column with a restricted option set — "draft_voice" is not an allowed value. Do NOT write `prospect_id`, `sender_id`, `variant_id`, or a new mode value; just `date` and `status`.
 
 ---
 
@@ -212,6 +220,8 @@ Before writing any row:
 - No pain signal for sanity-check: fall back to `v0_pick_your_brain`
 - Domain slot too generic: retry with more specific prompt before writing
 - Airtable write fails: retry once after 30s, log and continue
+- `status_loop_runs` write fails with `INVALID_MULTIPLE_CHOICE_OPTIONS`: the `mode` field is a single-select with a restricted option set — drop the `mode` field and write only `date` + `status`
+- `status_loop_runs` write fails with `UNKNOWN_FIELD_NAME`: the field does not exist in that table — drop it and retry
 
 ---
 
@@ -236,7 +246,7 @@ hermes chat --skill gitm-draft-voice --yolo
 Type inside the session:
 
 ```
-Generate a draft outreach message for the next unprocessed prospect-sender pair in scorer_ready_rows that does not yet have a row in outreach_drafts. Pull sender persona from context_sender_personas in Airtable. Pull voice rules from Pinecone index gitm-context-store. Select the correct copy variant based on signal data. Fill all slots with specific, prospect-accurate values. Write the draft to outreach_drafts with status=pending_review. Log to status_loop_runs.
+Generate a draft outreach message for the next unprocessed prospect-sender pair in scorer_ready_rows that does not yet have a row in outreach_drafts. Pull sender persona from context_sender_personas in Airtable. Pull voice rules from Pinecone index gitm-context-store (or context_voice_rules as fallback). Select the correct copy variant based on signal data. Fill all slots with specific, prospect-accurate values. Write the draft to outreach_drafts with status=pending_review. Log date + status to status_loop_runs.
 ```
 
 ---
